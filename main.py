@@ -1023,14 +1023,7 @@ class RuleIndexService:
         self.index = SimpleFaissIndex()
 
     def build_query_text(self, order: OrderInput) -> str:
-        parts = [
-            order.product_name,
-            order.valve_type,
-            order.diameter,
-            order.pressure,
-            order.model or "",
-        ]
-        return " ".join(part for part in parts if part)
+        return _select_query_text(order, mode="v1")
 
     def add_rule_vector(self, rule_id: str, rule_text: str) -> None:
         self.index.add(rule_id, self.embedding.encode(rule_text))
@@ -1047,13 +1040,23 @@ class CapacityScheduler:
         self._capacity: Dict[Tuple[str, date], ThresholdRecord] = {}
 
     def seed_capacity(self, record: ThresholdRecord) -> None:
-        self._capacity[(record.line_id, record.schedule_date)] = record
+        key = _make_capacity_key(record.line_id, record.schedule_date)
+        self._capacity[key] = record
 
     def _get_capacity(self, line_id: str, target_date: date) -> ThresholdRecord:
-        key = (line_id, target_date)
+        key = _make_capacity_key(line_id, target_date)
         if key not in self._capacity:
             self._capacity[key] = ThresholdRecord(
-                line_id=line_id,
+                line_id=_normalize_order_line(OrderInput(
+                    order_id="__seed__",
+                    product_name="",
+                    valve_type="",
+                    diameter="",
+                    pressure="",
+                    quantity=0,
+                    schedule_date=target_date,
+                    line_id=line_id,
+                )),
                 schedule_date=target_date,
                 current_threshold=100,
                 current_quantity=0,
@@ -1066,22 +1069,17 @@ class CapacityScheduler:
         results: List[CapacityAssignment] = []
         line_groups: Dict[str, List[OrderInput]] = {}
         for order in orders:
+            normalized_line = _normalize_order_line(order)
+            order.line_id = normalized_line
+            order.quantity = _normalize_quantity(order.quantity)
             line_groups.setdefault(order.line_id, []).append(order)
 
         for line_id, line_orders in line_groups.items():
             line_orders.sort(key=lambda o: o.schedule_date)
             for order in line_orders:
                 assigned_date = self._find_date(order, window_days)
-                shift_days = (assigned_date - order.schedule_date).days
                 results.append(
-                    CapacityAssignment(
-                        order_id=order.order_id,
-                        line_id=line_id,
-                        original_date=order.schedule_date,
-                        assigned_date=assigned_date,
-                        shift_days=shift_days,
-                        reason="超过阈值顺延" if shift_days > 0 else "阈值满足",
-                    )
+                    _assign_capacity_result(order, assigned_date, order.schedule_date)
                 )
         return results
 
@@ -1105,17 +1103,27 @@ class OptimizationService:
 
     def match_rule(self, order: OrderInput, top_k: int = 5) -> RuleMatchTrace:
         events: List[Dict[str, Any]] = []
+        query_v1 = _build_query_text_v1(order)
+        query_v2 = _build_query_text_v2(order)
+        query_v3 = _build_query_text_v3(order)
+        query_v4 = _build_query_text_v4(order)
+        events.append(_trace_event("query_v1", {"text": query_v1}))
+        events.append(_trace_event("query_v2", {"text": query_v2}))
+        events.append(_trace_event("query_v3", {"text": query_v3}))
+        events.append(_trace_event("query_v4", {"text": query_v4}))
+
         candidates = self.rule_index.search(order, top_k=top_k)
-        events.append({"step": "faiss_topk", "candidates": candidates})
+        events.append(_trace_event("faiss_topk", {"candidates": candidates}))
 
         if not candidates:
-            events.append({"step": "fallback", "reason": "召回不足"})
+            events.append(_trace_event("fallback", {"reason": "召回不足"}))
             return RuleMatchTrace(order_id=order.order_id, match_status="none", events=events)
 
         rule_id, similarity = candidates[0]
+        status = "unique" if similarity > 0 else "multiple"
         return RuleMatchTrace(
             order_id=order.order_id,
-            match_status="unique" if similarity > 0 else "multiple",
+            match_status=status,
             matched_rule_id=rule_id,
             similarity=similarity,
             events=events,
@@ -1140,17 +1148,14 @@ class OptimizationService:
             trace = self.match_rule(order)
             traces.append(trace)
             if trace.match_status in {"unique"}:
-                order.fixed_cycle = order.fixed_cycle or 0
-                order.cycle_base = order.cycle_base or 0
+                _apply_cycle_defaults(order)
                 job.optimized += 1
             else:
                 job.exceptions += 1
                 exceptions.append(
-                    {
-                        "order_id": order.order_id,
-                        "reason": "规则未唯一命中",
-                        "match_status": trace.match_status,
-                    }
+                    _build_exception(
+                        order.order_id, trace.match_status, "规则未唯一命中"
+                    )
                 )
 
         capacities = self.scheduler.assign(orders)
@@ -1163,6 +1168,130 @@ class OptimizationService:
             traces=traces,
             exceptions=exceptions,
         )
+
+
+def _build_query_text_v1(order: OrderInput) -> str:
+    """构建检索文本（版本1）。"""
+    parts = [
+        order.product_name,
+        order.valve_type,
+        order.diameter,
+        order.pressure,
+        order.model or "",
+    ]
+    return " ".join([p for p in parts if p])
+
+
+def _build_query_text_v2(order: OrderInput) -> str:
+    """构建检索文本（版本2，字段顺序调整）。"""
+    parts = [
+        order.valve_type,
+        order.product_name,
+        order.model or "",
+        order.diameter,
+        order.pressure,
+    ]
+    return " ".join([p for p in parts if p])
+
+
+def _build_query_text_v3(order: OrderInput) -> str:
+    """构建检索文本（版本3，带分隔符）。"""
+    parts = [
+        f"产品:{order.product_name}",
+        f"阀类:{order.valve_type}",
+        f"通径:{order.diameter}",
+        f"压力:{order.pressure}",
+        f"型号:{order.model or ''}",
+    ]
+    return " | ".join([p for p in parts if p])
+
+
+def _build_query_text_v4(order: OrderInput) -> str:
+    """构建检索文本（版本4，简化拼接）。"""
+    return f"{order.product_name} {order.valve_type} {order.diameter} {order.pressure} {order.model or ''}".strip()
+
+
+def _select_query_text(order: OrderInput, mode: str = "v1") -> str:
+    """根据 mode 选择查询文本构建方式。"""
+    if mode == "v2":
+        return _build_query_text_v2(order)
+    if mode == "v3":
+        return _build_query_text_v3(order)
+    if mode == "v4":
+        return _build_query_text_v4(order)
+    return _build_query_text_v1(order)
+
+
+def _normalize_order_line(order: OrderInput) -> str:
+    """订单产线字段规范化（简单兜底）。"""
+    value = (order.line_id or "").strip()
+    if not value:
+        return "UNKNOWN_LINE"
+    return value
+
+
+def _normalize_quantity(quantity: int) -> int:
+    """数量兜底处理。"""
+    if quantity is None:
+        return 0
+    if quantity < 0:
+        return 0
+    return int(quantity)
+
+
+def _make_capacity_key(line_id: str, schedule_date: date) -> Tuple[str, date]:
+    """构造产线容量 key。"""
+    return (line_id, schedule_date)
+
+
+def _to_capacity_reason(shift_days: int) -> str:
+    """生成阈值排产原因。"""
+    if shift_days <= 0:
+        return "阈值满足"
+    if shift_days == 1:
+        return "超过阈值顺延1天"
+    return f"超过阈值顺延{shift_days}天"
+
+
+def _build_exception(order_id: str, match_status: str, message: str) -> Dict[str, Any]:
+    """构造异常输出。"""
+    return {
+        "order_id": order_id,
+        "reason": message,
+        "match_status": match_status,
+    }
+
+
+def _trace_event(step: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """构建 trace event。"""
+    return {
+        "step": step,
+        "payload": payload,
+        "time": datetime.utcnow().isoformat(),
+    }
+
+
+def _apply_cycle_defaults(order: OrderInput) -> None:
+    """补齐周期字段（兜底）。"""
+    if order.fixed_cycle is None:
+        order.fixed_cycle = 0
+    if order.cycle_base is None:
+        order.cycle_base = 0
+
+
+def _assign_capacity_result(
+    order: OrderInput, assigned_date: date, original_date: date
+) -> CapacityAssignment:
+    """构造 CapacityAssignment。"""
+    shift_days = (assigned_date - original_date).days
+    return CapacityAssignment(
+        order_id=order.order_id,
+        line_id=order.line_id,
+        original_date=original_date,
+        assigned_date=assigned_date,
+        shift_days=shift_days,
+        reason=_to_capacity_reason(shift_days),
+    )
 
 
 rule_index_service = RuleIndexService()
