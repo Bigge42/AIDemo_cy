@@ -1171,6 +1171,7 @@ class OptimizationService:
 
 
 def _build_query_text_v1(order: OrderInput) -> str:
+    # 方案一
     """构建检索文本（版本1）。"""
     parts = [
         order.product_name,
@@ -1183,6 +1184,7 @@ def _build_query_text_v1(order: OrderInput) -> str:
 
 
 def _build_query_text_v2(order: OrderInput) -> str:
+    # 方案二
     """构建检索文本（版本2，字段顺序调整）。"""
     parts = [
         order.valve_type,
@@ -1195,6 +1197,7 @@ def _build_query_text_v2(order: OrderInput) -> str:
 
 
 def _build_query_text_v3(order: OrderInput) -> str:
+    # 方案三
     """构建检索文本（版本3，带分隔符）。"""
     parts = [
         f"产品:{order.product_name}",
@@ -1207,11 +1210,13 @@ def _build_query_text_v3(order: OrderInput) -> str:
 
 
 def _build_query_text_v4(order: OrderInput) -> str:
+    # 方案四
     """构建检索文本（版本4，简化拼接）。"""
     return f"{order.product_name} {order.valve_type} {order.diameter} {order.pressure} {order.model or ''}".strip()
 
 
 def _select_query_text(order: OrderInput, mode: str = "v1") -> str:
+    # 查询文本路由
     """根据 mode 选择查询文本构建方式。"""
     if mode == "v2":
         return _build_query_text_v2(order)
@@ -1223,6 +1228,7 @@ def _select_query_text(order: OrderInput, mode: str = "v1") -> str:
 
 
 def _normalize_order_line(order: OrderInput) -> str:
+    # 产线兜底
     """订单产线字段规范化（简单兜底）。"""
     value = (order.line_id or "").strip()
     if not value:
@@ -1231,6 +1237,7 @@ def _normalize_order_line(order: OrderInput) -> str:
 
 
 def _normalize_quantity(quantity: int) -> int:
+    # 数量兜底
     """数量兜底处理。"""
     if quantity is None:
         return 0
@@ -1240,11 +1247,13 @@ def _normalize_quantity(quantity: int) -> int:
 
 
 def _make_capacity_key(line_id: str, schedule_date: date) -> Tuple[str, date]:
+    # 容量键生成
     """构造产线容量 key。"""
     return (line_id, schedule_date)
 
 
 def _to_capacity_reason(shift_days: int) -> str:
+    # 生成原因说明
     """生成阈值排产原因。"""
     if shift_days <= 0:
         return "阈值满足"
@@ -1254,6 +1263,7 @@ def _to_capacity_reason(shift_days: int) -> str:
 
 
 def _build_exception(order_id: str, match_status: str, message: str) -> Dict[str, Any]:
+    # 统一异常格式
     """构造异常输出。"""
     return {
         "order_id": order_id,
@@ -1263,6 +1273,7 @@ def _build_exception(order_id: str, match_status: str, message: str) -> Dict[str
 
 
 def _trace_event(step: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    # Trace 事件封装
     """构建 trace event。"""
     return {
         "step": step,
@@ -1272,6 +1283,7 @@ def _trace_event(step: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _apply_cycle_defaults(order: OrderInput) -> None:
+    # 周期字段兜底
     """补齐周期字段（兜底）。"""
     if order.fixed_cycle is None:
         order.fixed_cycle = 0
@@ -1282,6 +1294,7 @@ def _apply_cycle_defaults(order: OrderInput) -> None:
 def _assign_capacity_result(
     order: OrderInput, assigned_date: date, original_date: date
 ) -> CapacityAssignment:
+    # 结果封装
     """构造 CapacityAssignment。"""
     shift_days = (assigned_date - original_date).days
     return CapacityAssignment(
