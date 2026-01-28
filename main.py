@@ -1,109 +1,27 @@
-"""
-软件名称：基于知识检索的排产优化智能体软件 V1.0
-软件简称：排产优化智能体
-版本号：V1.0
-软件类型：应用软件（Web/服务端为主，含前端页面与后端接口）
-开发语言与框架：
-- 后端：Python（FastAPI/同类框架）、可选 .NET 服务编排
-- 检索：Embedding 推理 + FAISS 向量检索
-- 前端：Vue/React（订单周期列表页按钮与结果展示）
-运行环境：Linux/Windows 服务器，支持 Docker 部署
-数据库：支持 SQL Server（订单与排产数据）、MySQL（规则/知识库权威存储，可按实际替换），不强制更换现有数据库
-"""
 from __future__ import annotations
 
-from typing import Optional, List, Tuple, Set, Dict, Any
-from datetime import datetime, date, timedelta
-import os
+from datetime import date, datetime, timedelta
 import json
-from urllib import request, error
-import uuid
 import logging
 from logging.handlers import TimedRotatingFileHandler
+import os
+from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib import error, request
+import uuid
 
 import pymysql
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, ConfigDict
-
-
-# ================== 软件基本信息 ==================
-SOFTWARE_INFO = {
-    "software_name": "基于知识检索的排产优化智能体软件 V1.0",
-    "software_short_name": "排产优化智能体",
-    "version": "V1.0",
-    "software_type": "应用软件（Web/服务端为主，含前端页面与后端接口）",
-    "languages_frameworks": {
-        "backend": "Python（FastAPI/同类框架）、可选 .NET 服务编排",
-        "retrieval": "Embedding 推理 + FAISS 向量检索",
-        "frontend": "Vue/React（订单周期列表页按钮与结果展示）",
-    },
-    "runtime": "Linux/Windows 服务器，支持 Docker 部署",
-    "databases": "支持 SQL Server（订单与排产数据）、MySQL（规则/知识库权威存储，可按实际替换），不强制更换现有数据库",
-    "background": {
-        "summary": (
-            "制造业排产普遍呈现多品种小批量、需求波动大、交期刚性强、跨部门协同复杂等特点，"
-            "传统排产依赖经验与 Excel 手工处理，导致参数口径不一致、阈值约束缺失、知识难沉淀、"
-            "批量处理链路长等问题。"
-        ),
-        "pain_points": [
-            "排产参数维护分散，口径不一致、可追溯性弱。",
-            "排产日期缺少产线阈值约束，容易超排与频繁改期。",
-            "历史订单与经验难以沉淀复用，人员更替导致能力断层。",
-            "批量处理耗时长、查询链路多，影响计划响应速度与稳定性。",
-        ],
-    },
-    "goals": [
-        "一键批量优化：订单周期列表新增“智能体优化”按钮发起批量计算。",
-        "参数智能校准：调用规则服务输出周期基准/固定周期建议并可回写。",
-        "阈值约束排产日期：基于产线阈值自动生成 CapacityScheduleDate。",
-        "知识沉淀复用：Embedding+FAISS 提升命中率与速度。",
-        "可追溯可回滚：输出 trace 与异常清单，支持回滚。",
-    ],
-    "scope": "订单周期参数维护、排产日期优化、产线阈值约束管理、批量排产优化与复核场景",
-    "architecture": [
-        "业务系统：订单筛选、发起批量优化任务、结果与异常展示。",
-        "智能体服务：批量 Query、Embedding 推理、FAISS 召回、规则校验、阈值排产日期计算与回写审计。",
-        "数据层：SQL Server 订单与排产主数据、MySQL 规则/知识库、FAISS 向量索引。",
-    ],
-    "modules": [
-        "批量优化入口与任务管理（按钮触发、任务进度与统计）。",
-        "知识检索增强的规则匹配与参数推断（Embedding+FAISS+递进过滤）。",
-        "产线阈值约束的排产日期自动优化（容量表+最早可行分配）。",
-        "回写、审计、异常清单与回滚（trace 与异常导出）。",
-    ],
-    "key_technologies": [
-        "向量化语义检索（Embedding + FAISS）",
-        "批量推断与批量检索（batch embedding + batch search）",
-        "规则校验定案（候选集递进过滤）",
-        "阈值约束排产日期算法（装箱式最早可行分配）",
-    ],
-}
-
-
-class SoftwareInfoResponse(BaseModel):
-    software_name: str
-    software_short_name: str
-    version: str
-    software_type: str
-    languages_frameworks: Dict[str, str]
-    runtime: str
-    databases: str
-    background: Dict[str, Any]
-    goals: List[str]
-    scope: str
-    architecture: List[str]
-    modules: List[str]
-    key_technologies: List[str]
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ================== MySQL 配置 ==================
 DB_CONFIG = {
     "host": "127.0.0.1",
     "port": 3306,
-    "user": "rule_user",           # TODO: 改成你的 MySQL 用户名
-    "password": "Strong_Pwd_123!", # TODO: 改成你的 MySQL 密码
-    "database": "valve_rule_db",   # TODO: 改成你的数据库名
+    "user": "rule_user",  # TODO: 改成你的 MySQL 用户名
+    "password": "Strong_Pwd_123!",  # TODO: 改成你的 MySQL 密码
+    "database": "valve_rule_db",  # TODO: 改成你的数据库名
     "charset": "utf8mb4",
 }
 
@@ -122,7 +40,13 @@ def get_db_connection():
 LOG_DIR = os.getenv("VALVE_RULE_LOG_DIR", "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
-DEBUG_TRACE_DEFAULT = os.getenv("DEBUG_TRACE", "0").strip() in ("1", "true", "True", "YES", "yes")
+DEBUG_TRACE_DEFAULT = os.getenv("DEBUG_TRACE", "0").strip() in (
+    "1",
+    "true",
+    "True",
+    "YES",
+    "yes",
+)
 
 logger = logging.getLogger("valve_rule")
 logger.setLevel(logging.INFO)
@@ -141,7 +65,13 @@ if not any(isinstance(h, TimedRotatingFileHandler) for h in logger.handlers):
     logger.addHandler(file_handler)
 
 # 如你希望控制台也输出（容器/服务日志采集更方便），可打开：
-if os.getenv("VALVE_RULE_LOG_TO_CONSOLE", "1").strip() in ("1", "true", "True", "YES", "yes"):
+if os.getenv("VALVE_RULE_LOG_TO_CONSOLE", "1").strip() in (
+    "1",
+    "true",
+    "True",
+    "YES",
+    "yes",
+):
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(console_handler)
@@ -174,6 +104,7 @@ class RuleInput(BaseModel):
     - id 用于调用方标识这一行，服务只透传，不参与匹配。
     - OrderApprovedDate / ReplyDeliveryDate / RequestedDeliveryDate 为日期字段。
     """
+
     model_config = ConfigDict(
         validate_by_name=True,
         populate_by_name=True,
@@ -183,26 +114,26 @@ class RuleInput(BaseModel):
     id: Optional[str] = Field(default=None, description="调用方行ID，仅透传返回")
 
     # ------- 规则字段 -------
-    fa_men_da_lei:         Optional[str] = None  # 阀门大类
-    fa_men_lei_bie:        Optional[str] = None  # 阀门类别
-    chan_pin_ming_cheng:   Optional[str] = None  # 产品名称
-    gong_cheng_tong_jing:  Optional[str] = None  # 公称通径
-    gong_cheng_ya_li:      Optional[str] = None  # 公称压力
+    fa_men_da_lei: Optional[str] = None  # 阀门大类
+    fa_men_lei_bie: Optional[str] = None  # 阀门类别
+    chan_pin_ming_cheng: Optional[str] = None  # 产品名称
+    gong_cheng_tong_jing: Optional[str] = None  # 公称通径
+    gong_cheng_ya_li: Optional[str] = None  # 公称压力
 
-    fa_ti_cai_zhi:         Optional[str] = None  # 阀体材质
-    nei_jian_cai_zhi:      Optional[str] = None  # 内件材质
+    fa_ti_cai_zhi: Optional[str] = None  # 阀体材质
+    nei_jian_cai_zhi: Optional[str] = None  # 内件材质
     mi_feng_mian_xing_shi: Optional[str] = None  # 密封面形式
-    fa_lan_lian_jie:       Optional[str] = None  # 法兰连接方式
-    shang_gai_xing_shi:    Optional[str] = None  # 上盖形式
-    liu_liang_te_xing:     Optional[str] = None  # 流量特性
+    fa_lan_lian_jie: Optional[str] = None  # 法兰连接方式
+    shang_gai_xing_shi: Optional[str] = None  # 上盖形式
+    liu_liang_te_xing: Optional[str] = None  # 流量特性
 
-    zhi_xing_ji_gou:       Optional[str] = None  # 执行机构
-    fu_jian_pei_zhi:       Optional[str] = None  # 附件配置
+    zhi_xing_ji_gou: Optional[str] = None  # 执行机构
+    fu_jian_pei_zhi: Optional[str] = None  # 附件配置
 
-    wai_gou_fa_ti:         Optional[str] = None  # 外购阀体
-    wai_gou_biao_zhi:      Optional[str] = None  # 外购标志
-    te_pin:                Optional[str] = None  # 特品
-    xu_hao:                Optional[str] = None  # 序号
+    wai_gou_fa_ti: Optional[str] = None  # 外购阀体
+    wai_gou_biao_zhi: Optional[str] = None  # 外购标志
+    te_pin: Optional[str] = None  # 特品
+    xu_hao: Optional[str] = None  # 序号
 
     # ------- 日期输入（请求里字段名就叫这三个） -------
     order_approved_date: Optional[date] = Field(
@@ -219,12 +150,16 @@ class RuleInput(BaseModel):
 # ================== 规则分组（从粗到细） ==================
 FIELD_GROUPS: List[List[str]] = [
     ["fa_men_da_lei", "fa_men_lei_bie", "chan_pin_ming_cheng"],  # 大类/类别/产品名
-    ["gong_cheng_tong_jing", "gong_cheng_ya_li"],                # 通径/压力
-    ["fa_ti_cai_zhi", "nei_jian_cai_zhi"],                       # 材质
-    ["te_pin", "wai_gou_biao_zhi", "wai_gou_fa_ti"],             # 特品/外购
-    ["zhi_xing_ji_gou", "fu_jian_pei_zhi"],                      # 执行机构/附件
-    ["fa_lan_lian_jie", "shang_gai_xing_shi",
-     "liu_liang_te_xing", "mi_feng_mian_xing_shi"],              # 结构细节
+    ["gong_cheng_tong_jing", "gong_cheng_ya_li"],  # 通径/压力
+    ["fa_ti_cai_zhi", "nei_jian_cai_zhi"],  # 材质
+    ["te_pin", "wai_gou_biao_zhi", "wai_gou_fa_ti"],  # 特品/外购
+    ["zhi_xing_ji_gou", "fu_jian_pei_zhi"],  # 执行机构/附件
+    [
+        "fa_lan_lian_jie",
+        "shang_gai_xing_shi",
+        "liu_liang_te_xing",
+        "mi_feng_mian_xing_shi",
+    ],  # 结构细节
 ]
 
 
@@ -254,7 +189,9 @@ def error_reason_from_status(code: int) -> str:
     }.get(code, "HTTP_ERROR")
 
 
-def _outputs_to_preview(outputs: Set[Tuple[Any, Any]], limit: int = 10) -> List[Dict[str, Any]]:
+def _outputs_to_preview(
+    outputs: Set[Tuple[Any, Any]], limit: int = 10
+) -> List[Dict[str, Any]]:
     """
     outputs: {(sheng_chan_xian, gu_ding_zhou_qi), ...}
     -> [{"sheng_chan_xian": ..., "gu_ding_zhou_qi": ...}, ...]
@@ -371,17 +308,19 @@ def infer_one_with_conn(
         if rows:
             outputs = {(r["sheng_chan_xian"], r["gu_ding_zhou_qi"]) for r in rows}
 
-        trace.append({
-            "group_index": group_idx,
-            "group_fields": list(group),
-            "added_fields": added_fields,
-            "used_fields": list(used_fields),
-            "where": " AND ".join(conditions),
-            "params": [_truncate(p) for p in params],
-            "matched_rule_count": len(rows),
-            "distinct_output_count": len(outputs),
-            "outputs_preview": _outputs_to_preview(outputs, limit=10),
-        })
+        trace.append(
+            {
+                "group_index": group_idx,
+                "group_fields": list(group),
+                "added_fields": added_fields,
+                "used_fields": list(used_fields),
+                "where": " AND ".join(conditions),
+                "params": [_truncate(p) for p in params],
+                "matched_rule_count": len(rows),
+                "distinct_output_count": len(outputs),
+                "outputs_preview": _outputs_to_preview(outputs, limit=10),
+            }
+        )
 
         # 这一轮直接变成 0 行：说明“加了这些筛选字段后，没有任何规则匹配”
         if not rows:
@@ -403,8 +342,8 @@ def infer_one_with_conn(
             # 1) StandardDeliveryDate = OrderApprovedDate + gu_ding_zhou_qi
             standard_delivery_date: Optional[date] = None
             if data.order_approved_date is not None and cycle is not None:
-                standard_delivery_date = (
-                    data.order_approved_date + timedelta(days=int(cycle))
+                standard_delivery_date = data.order_approved_date + timedelta(
+                    days=int(cycle)
                 )
 
             # 2) ScheduleDate = D_base
@@ -462,16 +401,20 @@ def do_infer(data: RuleInput, *, debug_trace: bool) -> Dict[str, Any]:
             include_trace_in_exception=debug_trace,
         )
 
-        _json_log({
-            "event": "infer_ok",
-            "request_id": request_id,
-            "id": data.id,
-            "started_at": started_at,
-            "ended_at": datetime.now(),
-            "duration_ms": int((datetime.now() - started_at).total_seconds() * 1000),
-            "result": result,
-            "trace": trace,  # 日志里永远保留全量 trace（最核心诊断信息）
-        })
+        _json_log(
+            {
+                "event": "infer_ok",
+                "request_id": request_id,
+                "id": data.id,
+                "started_at": started_at,
+                "ended_at": datetime.now(),
+                "duration_ms": int(
+                    (datetime.now() - started_at).total_seconds() * 1000
+                ),
+                "result": result,
+                "trace": trace,  # 日志里永远保留全量 trace（最核心诊断信息）
+            }
+        )
 
         resp = {"request_id": request_id, **result}
         if debug_trace:
@@ -479,44 +422,52 @@ def do_infer(data: RuleInput, *, debug_trace: bool) -> Dict[str, Any]:
         return resp
 
     except HTTPException as ex:
-        _json_log({
-            "event": "infer_fail",
-            "request_id": request_id,
-            "id": data.id,
-            "started_at": started_at,
-            "ended_at": datetime.now(),
-            "duration_ms": int((datetime.now() - started_at).total_seconds() * 1000),
-            "error_code": ex.status_code,
-            "reason": error_reason_from_status(ex.status_code),
-            "detail": ex.detail,
-            "trace": trace,  # 日志里永远保留全量 trace
-        })
+        _json_log(
+            {
+                "event": "infer_fail",
+                "request_id": request_id,
+                "id": data.id,
+                "started_at": started_at,
+                "ended_at": datetime.now(),
+                "duration_ms": int(
+                    (datetime.now() - started_at).total_seconds() * 1000
+                ),
+                "error_code": ex.status_code,
+                "reason": error_reason_from_status(ex.status_code),
+                "detail": ex.detail,
+                "trace": trace,  # 日志里永远保留全量 trace
+            }
+        )
         raise ex
 
     except Exception as e:
-        _json_log({
-            "event": "infer_fail",
-            "request_id": request_id,
-            "id": data.id,
-            "started_at": started_at,
-            "ended_at": datetime.now(),
-            "duration_ms": int((datetime.now() - started_at).total_seconds() * 1000),
-            "error_code": 500,
-            "reason": "SERVER_ERROR",
-            "error": str(e),
-            "trace": trace,
-        })
-        raise HTTPException(status_code=500, detail={"message": str(e), "reason": "SERVER_ERROR"})
+        _json_log(
+            {
+                "event": "infer_fail",
+                "request_id": request_id,
+                "id": data.id,
+                "started_at": started_at,
+                "ended_at": datetime.now(),
+                "duration_ms": int(
+                    (datetime.now() - started_at).total_seconds() * 1000
+                ),
+                "error_code": 500,
+                "reason": "SERVER_ERROR",
+                "error": str(e),
+                "trace": trace,
+            }
+        )
+        raise HTTPException(
+            status_code=500, detail={"message": str(e), "reason": "SERVER_ERROR"}
+        )
     finally:
         conn.close()
 
 
 # ================== FastAPI 初始化 ==================
 app = FastAPI(
-    title="排产优化智能体",
-    description=(
-        "基于知识检索的排产优化智能体软件 V1.0：提供规则推断、批量优化、阈值约束排产日期计算等服务。"
-    ),
+    title="Valve Rule Service",
+    description="根据输入字段推断 生产线 & 固定周期，并计算标准交期和排产日期（D_base）",
 )
 
 app.add_middleware(
@@ -528,19 +479,13 @@ app.add_middleware(
 )
 
 
-@app.get("/info", response_model=SoftwareInfoResponse, summary="软件基本信息")
-def get_software_info():
-    """
-    返回排产优化智能体的软件说明与能力概览。
-    """
-    return SOFTWARE_INFO
-
-
 # ================== 单条 infer 接口 ==================
 @app.post("/infer", summary="单条：推断生产线、固定周期、标准交期和排产日期")
 def infer_line_and_cycle(
     data: RuleInput,
-    debug_trace: bool = Query(default=DEBUG_TRACE_DEFAULT, description="是否在响应体中返回 trace（用于调试）"),
+    debug_trace: bool = Query(
+        default=DEBUG_TRACE_DEFAULT, description="是否在响应体中返回 trace（用于调试）"
+    ),
 ):
     return do_infer(data, debug_trace=debug_trace)
 
@@ -549,7 +494,9 @@ def infer_line_and_cycle(
 @app.post("/batch_infer", summary="批量：一次提交多条规则，逐条返回结果并生成日志")
 def batch_infer(
     items: List[RuleInput],
-    debug_trace: bool = Query(default=DEBUG_TRACE_DEFAULT, description="是否在响应体中返回 trace（用于调试）"),
+    debug_trace: bool = Query(
+        default=DEBUG_TRACE_DEFAULT, description="是否在响应体中返回 trace（用于调试）"
+    ),
 ):
     """
     增强点：
@@ -588,18 +535,22 @@ def batch_infer(
 
                 stats["ok"] += 1
 
-                _json_log({
-                    "event": "batch_item_ok",
-                    "batch_id": batch_id,
-                    "request_id": request_id,
-                    "index": idx,
-                    "id": item.id,
-                    "started_at": item_started,
-                    "ended_at": datetime.now(),
-                    "duration_ms": int((datetime.now() - item_started).total_seconds() * 1000),
-                    "result": r,
-                    "trace": trace,
-                })
+                _json_log(
+                    {
+                        "event": "batch_item_ok",
+                        "batch_id": batch_id,
+                        "request_id": request_id,
+                        "index": idx,
+                        "id": item.id,
+                        "started_at": item_started,
+                        "ended_at": datetime.now(),
+                        "duration_ms": int(
+                            (datetime.now() - item_started).total_seconds() * 1000
+                        ),
+                        "result": r,
+                        "trace": trace,
+                    }
+                )
 
                 item_resp: Dict[str, Any] = {
                     "index": idx,
@@ -616,20 +567,24 @@ def batch_infer(
                 reason = error_reason_from_status(ex.status_code)
                 stats[reason] = stats.get(reason, 0) + 1
 
-                _json_log({
-                    "event": "batch_item_fail",
-                    "batch_id": batch_id,
-                    "request_id": request_id,
-                    "index": idx,
-                    "id": item.id,
-                    "started_at": item_started,
-                    "ended_at": datetime.now(),
-                    "duration_ms": int((datetime.now() - item_started).total_seconds() * 1000),
-                    "error_code": ex.status_code,
-                    "reason": reason,
-                    "detail": ex.detail,
-                    "trace": trace,
-                })
+                _json_log(
+                    {
+                        "event": "batch_item_fail",
+                        "batch_id": batch_id,
+                        "request_id": request_id,
+                        "index": idx,
+                        "id": item.id,
+                        "started_at": item_started,
+                        "ended_at": datetime.now(),
+                        "duration_ms": int(
+                            (datetime.now() - item_started).total_seconds() * 1000
+                        ),
+                        "error_code": ex.status_code,
+                        "reason": reason,
+                        "detail": ex.detail,
+                        "trace": trace,
+                    }
+                )
 
                 item_resp = {
                     "index": idx,
@@ -647,20 +602,24 @@ def batch_infer(
             except Exception as e:
                 stats["SERVER_ERROR"] += 1
 
-                _json_log({
-                    "event": "batch_item_fail",
-                    "batch_id": batch_id,
-                    "request_id": request_id,
-                    "index": idx,
-                    "id": item.id,
-                    "started_at": item_started,
-                    "ended_at": datetime.now(),
-                    "duration_ms": int((datetime.now() - item_started).total_seconds() * 1000),
-                    "error_code": 500,
-                    "reason": "SERVER_ERROR",
-                    "error": str(e),
-                    "trace": trace,
-                })
+                _json_log(
+                    {
+                        "event": "batch_item_fail",
+                        "batch_id": batch_id,
+                        "request_id": request_id,
+                        "index": idx,
+                        "id": item.id,
+                        "started_at": item_started,
+                        "ended_at": datetime.now(),
+                        "duration_ms": int(
+                            (datetime.now() - item_started).total_seconds() * 1000
+                        ),
+                        "error_code": 500,
+                        "reason": "SERVER_ERROR",
+                        "error": str(e),
+                        "trace": trace,
+                    }
+                )
 
                 item_resp = {
                     "index": idx,
@@ -694,24 +653,28 @@ def batch_infer(
             with open(log_path, "w", encoding="utf-8") as f:
                 json.dump(log_content, f, ensure_ascii=False, indent=2, default=str)
         except Exception as e:
-            _json_log({
-                "event": "batch_log_write_fail",
-                "batch_id": batch_id,
-                "error": str(e),
-                "target": log_path,
-            })
+            _json_log(
+                {
+                    "event": "batch_log_write_fail",
+                    "batch_id": batch_id,
+                    "error": str(e),
+                    "target": log_path,
+                }
+            )
 
         # batch 级别结构化日志（app.jsonl）
-        _json_log({
-            "event": "batch_done",
-            "batch_id": batch_id,
-            "started_at": started_at,
-            "ended_at": datetime.now(),
-            "duration_ms": int((datetime.now() - started_at).total_seconds() * 1000),
-            "total": len(items),
-            "stats": stats,
-            "log_file": log_path,
-        })
+        _json_log(
+            {
+                "event": "batch_done",
+                "batch_id": batch_id,
+                "started_at": started_at,
+                "ended_at": datetime.now(),
+                "duration_ms": int((datetime.now() - started_at).total_seconds() * 1000),
+                "total": len(items),
+                "stats": stats,
+                "log_file": log_path,
+            }
+        )
 
         return {
             "batch_id": batch_id,
@@ -722,7 +685,6 @@ def batch_infer(
         }
     finally:
         conn.close()
-
 
 
 # ================== FMZD 同步（SeacherFMZD） ==================
@@ -793,7 +755,10 @@ def fetch_fmzd(start_date: date, end_date: date) -> List[Dict[str, Any]]:
             err_body = e.read().decode("utf-8", errors="replace")
         except Exception:
             err_body = ""
-        raise HTTPException(status_code=502, detail=f"FMZD接口HTTP错误: {getattr(e, 'code', '')} {err_body[:300]}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"FMZD接口HTTP错误: {getattr(e, 'code', '')} {err_body[:300]}",
+        )
     except error.URLError as e:
         raise HTTPException(status_code=502, detail=f"FMZD接口网络错误: {str(e)[:300]}")
     except Exception as e:
@@ -879,7 +844,9 @@ def upsert_valve_rules(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         # 只写入“表里存在的列”
         write_cols = [c for c in FMZD_FIELD_MAP.keys() if c in available_cols]
         if not write_cols:
-            raise HTTPException(status_code=500, detail="valve_rule表未包含任何可写入字段（字段名不匹配）")
+            raise HTTPException(
+                status_code=500, detail="valve_rule表未包含任何可写入字段（字段名不匹配）"
+            )
 
         # 确保固定周期/生产线（推断依赖）优先存在
         for must in ("sheng_chan_xian", "gu_ding_zhou_qi"):
@@ -938,9 +905,422 @@ def upsert_valve_rules(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         conn.close()
 
 
-@app.post("/sync_fmzd_today", summary="同步FMZD：按天增量拉取并写入 valve_rule（start=当天, end=次日）")
+class OrderInput(BaseModel):
+    """订单输入（用于批量优化）"""
+
+    order_id: str = Field(..., description="订单号")
+    product_name: str = Field(..., description="产品名称")
+    valve_type: str = Field(..., description="阀类")
+    diameter: str = Field(..., description="通径")
+    pressure: str = Field(..., description="压力")
+    model: Optional[str] = Field(default=None, description="型号")
+    quantity: int = Field(..., description="订单数量")
+    schedule_date: date = Field(..., description="计划排产日期")
+    line_id: str = Field(..., description="产线编号")
+    cycle_base: Optional[int] = Field(default=None, description="周期基准")
+    fixed_cycle: Optional[int] = Field(default=None, description="固定周期")
+
+
+class ThresholdRecord(BaseModel):
+    """产线阈值记录"""
+
+    line_id: str
+    schedule_date: date
+    current_threshold: int
+    current_quantity: int
+
+
+class CapacityAssignment(BaseModel):
+    """阈值约束排产结果"""
+
+    order_id: str
+    line_id: str
+    original_date: date
+    assigned_date: date
+    shift_days: int
+    reason: str
+
+
+class RuleMatchTrace(BaseModel):
+    """规则命中 trace"""
+
+    order_id: str
+    match_status: str
+    matched_rule_id: Optional[str] = None
+    similarity: Optional[float] = None
+    fallback: bool = False
+    events: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class OptimizationJob(BaseModel):
+    """批量优化任务"""
+
+    job_id: str
+    created_at: datetime
+    status: str
+    total: int
+    optimized: int
+    exceptions: int
+    message: str
+
+
+class OptimizationResult(BaseModel):
+    """批量优化输出"""
+
+    job: OptimizationJob
+    orders: List[OrderInput]
+    capacities: List[CapacityAssignment]
+    traces: List[RuleMatchTrace]
+    exceptions: List[Dict[str, Any]]
+
+
+class SimpleEmbedding:
+    """简化的 Embedding 推理（占位实现）"""
+
+    def encode(self, text: str) -> List[float]:
+        tokens = [ord(ch) % 97 for ch in text if ch.strip()]
+        if not tokens:
+            return [0.0]
+        total = sum(tokens)
+        length = len(tokens)
+        return [total / length, max(tokens), min(tokens), float(length)]
+
+
+class SimpleFaissIndex:
+    """简化的 FAISS TopK 检索（占位实现）"""
+
+    def __init__(self) -> None:
+        self._vectors: Dict[str, List[float]] = {}
+
+    def add(self, rule_id: str, vector: List[float]) -> None:
+        self._vectors[rule_id] = vector
+
+    def search(self, vector: List[float], top_k: int = 5) -> List[Tuple[str, float]]:
+        results: List[Tuple[str, float]] = []
+        for rule_id, stored in self._vectors.items():
+            score = self._cosine_similarity(vector, stored)
+            results.append((rule_id, score))
+        results.sort(key=lambda item: item[1], reverse=True)
+        return results[:top_k]
+
+    @staticmethod
+    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+        if not a or not b:
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(y * y for y in b) ** 0.5
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+
+class RuleIndexService:
+    """规则向量检索服务（Embedding + FAISS）"""
+
+    def __init__(self) -> None:
+        self.embedding = SimpleEmbedding()
+        self.index = SimpleFaissIndex()
+
+    def build_query_text(self, order: OrderInput) -> str:
+        return _select_query_text(order, mode="v1")
+
+    def add_rule_vector(self, rule_id: str, rule_text: str) -> None:
+        self.index.add(rule_id, self.embedding.encode(rule_text))
+
+    def search(self, order: OrderInput, top_k: int = 5) -> List[Tuple[str, float]]:
+        query_text = self.build_query_text(order)
+        return self.index.search(self.embedding.encode(query_text), top_k=top_k)
+
+
+class CapacityScheduler:
+    """阈值约束排产日期计算"""
+
+    def __init__(self) -> None:
+        self._capacity: Dict[Tuple[str, date], ThresholdRecord] = {}
+
+    def seed_capacity(self, record: ThresholdRecord) -> None:
+        key = _make_capacity_key(record.line_id, record.schedule_date)
+        self._capacity[key] = record
+
+    def _get_capacity(self, line_id: str, target_date: date) -> ThresholdRecord:
+        key = _make_capacity_key(line_id, target_date)
+        if key not in self._capacity:
+            self._capacity[key] = ThresholdRecord(
+                line_id=_normalize_order_line(OrderInput(
+                    order_id="__seed__",
+                    product_name="",
+                    valve_type="",
+                    diameter="",
+                    pressure="",
+                    quantity=0,
+                    schedule_date=target_date,
+                    line_id=line_id,
+                )),
+                schedule_date=target_date,
+                current_threshold=100,
+                current_quantity=0,
+            )
+        return self._capacity[key]
+
+    def assign(
+        self, orders: List[OrderInput], window_days: int = 30
+    ) -> List[CapacityAssignment]:
+        results: List[CapacityAssignment] = []
+        line_groups: Dict[str, List[OrderInput]] = {}
+        for order in orders:
+            normalized_line = _normalize_order_line(order)
+            order.line_id = normalized_line
+            order.quantity = _normalize_quantity(order.quantity)
+            line_groups.setdefault(order.line_id, []).append(order)
+
+        for line_id, line_orders in line_groups.items():
+            line_orders.sort(key=lambda o: o.schedule_date)
+            for order in line_orders:
+                assigned_date = self._find_date(order, window_days)
+                results.append(
+                    _assign_capacity_result(order, assigned_date, order.schedule_date)
+                )
+        return results
+
+    def _find_date(self, order: OrderInput, window_days: int) -> date:
+        target = order.schedule_date
+        for _ in range(window_days):
+            record = self._get_capacity(order.line_id, target)
+            if record.current_quantity + order.quantity <= record.current_threshold:
+                record.current_quantity += order.quantity
+                return target
+            target = target + timedelta(days=1)
+        return target
+
+
+class OptimizationService:
+    """智能体优化核心服务"""
+
+    def __init__(self, rule_index: RuleIndexService, scheduler: CapacityScheduler) -> None:
+        self.rule_index = rule_index
+        self.scheduler = scheduler
+
+    def match_rule(self, order: OrderInput, top_k: int = 5) -> RuleMatchTrace:
+        events: List[Dict[str, Any]] = []
+        query_v1 = _build_query_text_v1(order)
+        query_v2 = _build_query_text_v2(order)
+        query_v3 = _build_query_text_v3(order)
+        query_v4 = _build_query_text_v4(order)
+        events.append(_trace_event("query_v1", {"text": query_v1}))
+        events.append(_trace_event("query_v2", {"text": query_v2}))
+        events.append(_trace_event("query_v3", {"text": query_v3}))
+        events.append(_trace_event("query_v4", {"text": query_v4}))
+
+        candidates = self.rule_index.search(order, top_k=top_k)
+        events.append(_trace_event("faiss_topk", {"candidates": candidates}))
+
+        if not candidates:
+            events.append(_trace_event("fallback", {"reason": "召回不足"}))
+            return RuleMatchTrace(order_id=order.order_id, match_status="none", events=events)
+
+        rule_id, similarity = candidates[0]
+        status = "unique" if similarity > 0 else "multiple"
+        return RuleMatchTrace(
+            order_id=order.order_id,
+            match_status=status,
+            matched_rule_id=rule_id,
+            similarity=similarity,
+            events=events,
+        )
+
+    def optimize(
+        self, orders: List[OrderInput], operator: str = "system"
+    ) -> OptimizationResult:
+        job = OptimizationJob(
+            job_id=f"JOB-{uuid.uuid4().hex}",
+            created_at=datetime.utcnow(),
+            status="running",
+            total=len(orders),
+            optimized=0,
+            exceptions=0,
+            message="任务执行中",
+        )
+
+        traces: List[RuleMatchTrace] = []
+        exceptions: List[Dict[str, Any]] = []
+        for order in orders:
+            trace = self.match_rule(order)
+            traces.append(trace)
+            if trace.match_status in {"unique"}:
+                _apply_cycle_defaults(order)
+                job.optimized += 1
+            else:
+                job.exceptions += 1
+                exceptions.append(
+                    _build_exception(
+                        order.order_id, trace.match_status, "规则未唯一命中"
+                    )
+                )
+
+        capacities = self.scheduler.assign(orders)
+        job.status = "done"
+        job.message = "任务已完成"
+        return OptimizationResult(
+            job=job,
+            orders=orders,
+            capacities=capacities,
+            traces=traces,
+            exceptions=exceptions,
+        )
+
+
+def _build_query_text_v1(order: OrderInput) -> str:
+    # 方案一
+    """构建检索文本（版本1）。"""
+    parts = [
+        order.product_name,
+        order.valve_type,
+        order.diameter,
+        order.pressure,
+        order.model or "",
+    ]
+    return " ".join([p for p in parts if p])
+
+
+def _build_query_text_v2(order: OrderInput) -> str:
+    # 方案二
+    """构建检索文本（版本2，字段顺序调整）。"""
+    parts = [
+        order.valve_type,
+        order.product_name,
+        order.model or "",
+        order.diameter,
+        order.pressure,
+    ]
+    return " ".join([p for p in parts if p])
+
+
+def _build_query_text_v3(order: OrderInput) -> str:
+    # 方案三
+    """构建检索文本（版本3，带分隔符）。"""
+    parts = [
+        f"产品:{order.product_name}",
+        f"阀类:{order.valve_type}",
+        f"通径:{order.diameter}",
+        f"压力:{order.pressure}",
+        f"型号:{order.model or ''}",
+    ]
+    return " | ".join([p for p in parts if p])
+
+
+def _build_query_text_v4(order: OrderInput) -> str:
+    # 方案四
+    """构建检索文本（版本4，简化拼接）。"""
+    return f"{order.product_name} {order.valve_type} {order.diameter} {order.pressure} {order.model or ''}".strip()
+
+
+def _select_query_text(order: OrderInput, mode: str = "v1") -> str:
+    # 查询文本路由
+    """根据 mode 选择查询文本构建方式。"""
+    if mode == "v2":
+        return _build_query_text_v2(order)
+    if mode == "v3":
+        return _build_query_text_v3(order)
+    if mode == "v4":
+        return _build_query_text_v4(order)
+    return _build_query_text_v1(order)
+
+
+def _normalize_order_line(order: OrderInput) -> str:
+    # 产线兜底
+    """订单产线字段规范化（简单兜底）。"""
+    value = (order.line_id or "").strip()
+    if not value:
+        return "UNKNOWN_LINE"
+    return value
+
+
+def _normalize_quantity(quantity: int) -> int:
+    # 数量兜底
+    """数量兜底处理。"""
+    if quantity is None:
+        return 0
+    if quantity < 0:
+        return 0
+    return int(quantity)
+
+
+def _make_capacity_key(line_id: str, schedule_date: date) -> Tuple[str, date]:
+    # 容量键生成
+    """构造产线容量 key。"""
+    return (line_id, schedule_date)
+
+
+def _to_capacity_reason(shift_days: int) -> str:
+    # 生成原因说明
+    """生成阈值排产原因。"""
+    if shift_days <= 0:
+        return "阈值满足"
+    if shift_days == 1:
+        return "超过阈值顺延1天"
+    return f"超过阈值顺延{shift_days}天"
+
+
+def _build_exception(order_id: str, match_status: str, message: str) -> Dict[str, Any]:
+    # 统一异常格式
+    """构造异常输出。"""
+    return {
+        "order_id": order_id,
+        "reason": message,
+        "match_status": match_status,
+    }
+
+
+def _trace_event(step: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    # Trace 事件封装
+    """构建 trace event。"""
+    return {
+        "step": step,
+        "payload": payload,
+        "time": datetime.utcnow().isoformat(),
+    }
+
+
+def _apply_cycle_defaults(order: OrderInput) -> None:
+    # 周期字段兜底
+    """补齐周期字段（兜底）。"""
+    if order.fixed_cycle is None:
+        order.fixed_cycle = 0
+    if order.cycle_base is None:
+        order.cycle_base = 0
+
+
+def _assign_capacity_result(
+    order: OrderInput, assigned_date: date, original_date: date
+) -> CapacityAssignment:
+    # 结果封装
+    """构造 CapacityAssignment。"""
+    shift_days = (assigned_date - original_date).days
+    return CapacityAssignment(
+        order_id=order.order_id,
+        line_id=order.line_id,
+        original_date=original_date,
+        assigned_date=assigned_date,
+        shift_days=shift_days,
+        reason=_to_capacity_reason(shift_days),
+    )
+
+
+rule_index_service = RuleIndexService()
+capacity_scheduler = CapacityScheduler()
+optimization_service = OptimizationService(rule_index_service, capacity_scheduler)
+optimization_jobs: Dict[str, OptimizationResult] = {}
+
+
+@app.post(
+    "/sync_fmzd_today",
+    summary="同步FMZD：按天增量拉取并写入 valve_rule（start=当天, end=次日）",
+)
 def sync_fmzd_today(
-    target_date: Optional[str] = Query(default=None, description="要同步哪一天(YYYY-MM-DD)。不填则取服务器当天。"),
+    target_date: Optional[str] = Query(
+        default=None, description="要同步哪一天(YYYY-MM-DD)。不填则取服务器当天。"
+    ),
     dry_run: bool = Query(default=False, description="只拉取不落库，返回前5条映射样例。"),
 ):
     # 只同步当天：start=当天，end=次日
@@ -980,13 +1360,15 @@ def sync_fmzd_today(
 
     result = upsert_valve_rules(mapped)
 
-    _json_log({
-        "event": "sync_fmzd_today_done",
-        "start": start,
-        "end": end,
-        "fetched": len(raw),
-        "result": result,
-    })
+    _json_log(
+        {
+            "event": "sync_fmzd_today_done",
+            "start": start,
+            "end": end,
+            "fetched": len(raw),
+            "result": result,
+        }
+    )
 
     return {
         "start": start.strftime("%Y-%m-%d"),
@@ -996,5611 +1378,51 @@ def sync_fmzd_today(
     }
 
 
-# ================== 本地调试入口 ==================
-
-# === 软件说明扩展模块（复杂示例代码与参考数据） ===
-
-class OrderItem(BaseModel):
-    order_id: str = Field(..., description="订单号")
-    line_code: str = Field(..., description="目标产线")
-    product_name: str = Field(..., description="产品名称")
-    spec: Optional[str] = Field(default=None, description="规格型号")
-    quantity: int = Field(..., ge=1, description="订单数量")
-    schedule_date: Optional[date] = Field(default=None, description="目标排产日期")
-    requested_date: Optional[date] = Field(default=None, description="客户要求交期")
-
-class JobRequest(BaseModel):
-    job_name: str = Field(..., description="任务名称")
-    created_by: Optional[str] = Field(default=None, description="发起人")
-    items: List[OrderItem] = Field(default_factory=list, description="订单列表")
-
-class JobStatus(BaseModel):
-    job_id: str
-    job_name: str
-    status: str
-    created_at: datetime
-    updated_at: datetime
-    total: int
-    success: int
-    failed: int
-
-class JobResult(BaseModel):
-    job_id: str
-    results: List[Dict[str, Any]]
-
-class EmbeddingRequest(BaseModel):
-    texts: List[str]
-    model: str = "mock-embedding-v1"
-
-class EmbeddingResponse(BaseModel):
-    model: str
-    vectors: List[List[float]]
-
-class FaissSearchRequest(BaseModel):
-    query_vector: List[float]
-    top_k: int = 5
-
-class FaissSearchResponse(BaseModel):
-    top_k: int
-    results: List[Dict[str, Any]]
-
-class ThresholdCalendarEntry(BaseModel):
-    line_code: str
-    date: date
-    current_threshold: int
-    current_quantity: int
-
-class CapacityScheduleRequest(BaseModel):
-    items: List[OrderItem]
-    calendar: List[ThresholdCalendarEntry]
-    max_shift_days: int = 30
-
-class CapacityScheduleResult(BaseModel):
-    order_id: str
-    line_code: str
-    assigned_date: date
-    shifted_days: int
-    reason: Optional[str] = None
-
-JOB_STORE: Dict[str, JobStatus] = {}
-JOB_RESULTS: Dict[str, JobResult] = {}
-AUDIT_LOGS: List[Dict[str, Any]] = []
-
-def normalize_text(text: str) -> str:
-    return " ".join(text.strip().split()).lower()
-
-def build_query_text(item: OrderItem) -> str:
-    parts = [
-        f"产品名称={item.product_name}",
-        f"规格={item.spec or ''}",
-        f"产线={item.line_code}",
-    ]
-    return ";".join([p for p in parts if p])
-
-def simulate_embedding(texts: List[str]) -> List[List[float]]:
-    vectors = []
-    for t in texts:
-        base = sum(ord(c) for c in t) % 997
-        vec = [((base + i * 13) % 100) / 100.0 for i in range(16)]
-        vectors.append(vec)
-    return vectors
-
-def cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
-    dot = sum(a * b for a, b in zip(vec_a, vec_b))
-    norm_a = sum(a * a for a in vec_a) ** 0.5
-    norm_b = sum(b * b for b in vec_b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-VECTOR_KB: List[Dict[str, Any]] = [
-    {"kb_id": "KB-BASE-001", "text": "阀门 大类=调节阀; 产品=闸阀; 通径=DN50", "line": "L1", "cycle": 7},
-    {"kb_id": "KB-BASE-002", "text": "阀门 大类=球阀; 产品=截止阀; 通径=DN80", "line": "L2", "cycle": 12},
-    {"kb_id": "KB-BASE-003", "text": "阀门 大类=蝶阀; 产品=止回阀; 通径=DN100", "line": "L3", "cycle": 9},
-    {"kb_id": "KB-BASE-004", "text": "阀门 大类=闸阀; 产品=闸阀; 通径=DN150", "line": "L4", "cycle": 15},
-    {"kb_id": "KB-BASE-005", "text": "阀门 大类=调节阀; 产品=针型阀; 通径=DN25", "line": "L5", "cycle": 5},
-]
-
-def simulate_faiss_search(query_vector: List[float], top_k: int = 5) -> List[Dict[str, Any]]:
-    kb_vectors = simulate_embedding([normalize_text(x["text"]) for x in VECTOR_KB])
-    scored = []
-    for kb_item, kb_vec in zip(VECTOR_KB, kb_vectors):
-        score = cosine_similarity(query_vector, kb_vec)
-        scored.append({"kb_id": kb_item["kb_id"], "score": score, **kb_item})
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    return scored[:top_k]
-
-def build_capacity_calendar(calendar: List[ThresholdCalendarEntry]) -> Dict[str, Dict[date, Dict[str, int]]]:
-    result: Dict[str, Dict[date, Dict[str, int]]] = {}
-    for entry in calendar:
-        line_map = result.setdefault(entry.line_code, {})
-        line_map[entry.date] = {
-            "threshold": entry.current_threshold,
-            "quantity": entry.current_quantity,
+@app.post("/optimize", summary="智能体批量优化：规则检索 + 阈值排产")
+def optimize_orders(
+    items: List[OrderInput],
+    operator: str = Query(default="system", description="操作人"),
+):
+    if not items:
+        raise HTTPException(status_code=400, detail="订单列表不能为空")
+    result = optimization_service.optimize(items, operator=operator)
+    optimization_jobs[result.job.job_id] = result
+    _json_log(
+        {
+            "event": "optimize_done",
+            "job_id": result.job.job_id,
+            "operator": operator,
+            "total": result.job.total,
+            "optimized": result.job.optimized,
+            "exceptions": result.job.exceptions,
         }
+    )
     return result
 
-def allocate_capacity(items: List[OrderItem], calendar: List[ThresholdCalendarEntry], max_shift_days: int) -> List[CapacityScheduleResult]:
-    cap_map = build_capacity_calendar(calendar)
-    results: List[CapacityScheduleResult] = []
-    grouped: Dict[str, List[OrderItem]] = {}
-    for item in items:
-        grouped.setdefault(item.line_code, []).append(item)
-    for line_code, line_items in grouped.items():
-        line_items.sort(key=lambda x: x.schedule_date or date.today())
-        for item in line_items:
-            target_date = item.schedule_date or date.today()
-            assigned = None
-            shifted = 0
-            for shift in range(max_shift_days + 1):
-                check_date = target_date + timedelta(days=shift)
-                cap_entry = cap_map.setdefault(line_code, {}).setdefault(check_date, {"threshold": 0, "quantity": 0})
-                if cap_entry["threshold"] <= 0:
-                    continue
-                if cap_entry["quantity"] + item.quantity <= cap_entry["threshold"]:
-                    cap_entry["quantity"] += item.quantity
-                    assigned = check_date
-                    shifted = shift
-                    break
-            if assigned is None:
-                assigned = target_date + timedelta(days=max_shift_days)
-                shifted = max_shift_days
-                reason = "超过最大顺延窗口，使用默认顺延日期"
-            else:
-                reason = None
-            results.append(CapacityScheduleResult(
-                order_id=item.order_id,
-                line_code=line_code,
-                assigned_date=assigned,
-                shifted_days=shifted,
-                reason=reason,
-            ))
-    return results
 
-@app.post("/embedding", response_model=EmbeddingResponse, summary="Embedding 推理模拟")
-def embedding_endpoint(payload: EmbeddingRequest):
-    vectors = simulate_embedding(payload.texts)
-    return EmbeddingResponse(model=payload.model, vectors=vectors)
-
-@app.post("/faiss_search", response_model=FaissSearchResponse, summary="FAISS 检索模拟")
-def faiss_search_endpoint(payload: FaissSearchRequest):
-    results = simulate_faiss_search(payload.query_vector, payload.top_k)
-    return FaissSearchResponse(top_k=payload.top_k, results=results)
-
-@app.post("/jobs", response_model=JobStatus, summary="创建批量优化任务")
-def create_job(payload: JobRequest):
-    job_id = uuid.uuid4().hex
-    now = datetime.now()
-    status = JobStatus(
-        job_id=job_id,
-        job_name=payload.job_name,
-        status="created",
-        created_at=now,
-        updated_at=now,
-        total=len(payload.items),
-        success=0,
-        failed=0,
-    )
-    JOB_STORE[job_id] = status
-    AUDIT_LOGS.append({"event": "job_created", "job_id": job_id, "payload": payload.model_dump()})
-    return status
-
-@app.get("/jobs/{job_id}", response_model=JobStatus, summary="查询任务状态")
+@app.get("/jobs/{job_id}", summary="查看优化任务状态")
 def get_job(job_id: str):
-    status = JOB_STORE.get(job_id)
-    if not status:
+    if job_id not in optimization_jobs:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return status
+    return optimization_jobs[job_id].job
 
-@app.post("/capacity_schedule", response_model=List[CapacityScheduleResult], summary="阈值约束排产日期计算")
-def capacity_schedule(payload: CapacityScheduleRequest):
-    results = allocate_capacity(payload.items, payload.calendar, payload.max_shift_days)
-    AUDIT_LOGS.append({"event": "capacity_schedule", "count": len(results)})
-    return results
 
-KNOWLEDGE_BASE_EXAMPLES: List[Dict[str, Any]] = [
-    {
-        "rule_id": "KB-0001",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN2; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0002",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN3; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0003",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN4; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0004",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN5; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0005",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN6; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0006",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN7; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0007",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN8; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0008",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN9; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0009",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN10; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0010",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN11; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0011",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN12; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0012",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN13; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0013",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN14; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0014",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN15; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0015",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN16; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0016",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN17; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0017",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN18; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0018",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN19; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0019",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN20; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0020",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN21; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0021",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN22; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0022",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN23; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0023",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN24; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0024",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN25; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0025",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN26; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0026",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN27; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0027",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN28; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0028",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN29; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0029",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN30; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0030",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN31; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0031",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN32; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0032",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN33; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0033",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN34; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0034",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN35; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0035",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN36; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0036",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN37; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0037",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN38; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0038",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN39; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0039",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN40; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0040",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN41; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0041",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN42; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0042",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN43; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0043",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN44; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0044",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN45; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0045",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN46; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0046",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN47; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0047",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN48; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0048",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN49; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0049",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN50; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0050",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN51; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0051",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN52; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0052",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN53; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0053",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN54; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0054",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN55; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0055",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN56; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0056",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN57; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0057",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN58; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0058",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN59; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0059",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN60; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0060",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN61; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0061",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN62; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0062",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN63; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0063",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN64; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0064",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN65; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0065",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN66; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0066",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN67; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0067",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN68; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0068",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN69; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0069",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN70; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0070",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN71; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0071",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN72; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0072",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN73; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0073",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN74; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0074",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN75; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0075",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN76; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0076",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN77; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0077",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN78; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0078",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN79; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0079",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN80; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0080",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN81; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0081",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN82; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0082",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN83; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0083",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN84; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0084",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN85; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0085",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN86; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0086",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN87; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0087",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN88; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0088",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN89; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0089",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN90; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0090",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN91; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0091",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN92; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0092",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN93; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0093",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN94; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0094",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN95; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0095",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN96; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0096",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN97; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0097",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN98; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0098",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN99; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0099",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN100; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0100",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN101; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0101",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN102; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0102",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN103; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0103",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN104; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0104",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN105; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0105",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN106; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0106",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN107; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0107",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN108; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0108",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN109; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0109",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN110; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0110",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN111; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0111",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN112; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0112",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN113; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0113",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN114; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0114",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN115; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0115",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN116; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0116",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN117; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0117",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN118; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0118",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN119; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0119",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN120; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0120",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN121; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0121",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN122; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0122",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN123; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0123",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN124; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0124",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN125; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0125",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN126; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0126",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN127; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0127",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN128; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0128",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN129; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0129",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN130; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0130",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN131; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0131",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN132; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0132",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN133; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0133",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN134; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0134",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN135; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0135",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN136; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0136",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN137; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0137",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN138; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0138",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN139; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0139",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN140; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0140",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN141; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0141",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN142; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0142",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN143; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0143",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN144; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0144",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN145; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0145",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN146; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0146",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN147; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0147",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN148; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0148",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN149; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0149",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN150; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0150",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN151; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0151",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN152; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0152",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN153; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0153",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN154; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0154",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN155; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0155",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN156; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0156",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN157; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0157",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN158; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0158",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN159; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0159",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN160; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0160",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN161; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0161",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN162; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0162",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN163; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0163",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN164; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0164",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN165; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0165",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN166; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0166",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN167; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0167",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN168; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0168",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN169; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0169",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN170; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0170",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN171; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0171",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN172; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0172",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN173; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0173",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN174; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0174",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN175; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0175",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN176; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0176",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN177; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0177",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN178; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0178",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN179; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0179",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN180; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0180",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN181; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0181",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN182; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0182",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN183; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0183",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN184; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0184",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN185; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0185",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN186; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0186",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN187; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0187",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN188; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0188",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN189; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0189",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN190; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0190",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN191; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0191",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN192; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0192",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN193; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0193",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN194; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0194",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN195; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0195",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN196; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0196",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN197; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0197",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN198; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0198",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN199; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0199",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN200; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0200",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN1; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0201",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN2; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0202",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN3; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0203",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN4; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0204",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN5; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0205",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN6; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0206",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN7; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0207",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN8; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0208",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN9; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0209",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN10; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0210",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN11; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0211",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN12; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0212",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN13; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0213",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN14; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0214",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN15; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0215",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN16; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0216",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN17; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0217",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN18; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0218",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN19; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0219",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN20; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0220",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN21; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0221",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN22; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0222",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN23; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0223",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN24; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0224",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN25; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0225",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN26; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0226",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN27; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0227",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN28; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0228",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN29; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0229",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN30; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0230",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN31; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0231",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN32; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0232",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN33; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0233",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN34; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0234",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN35; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0235",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN36; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0236",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN37; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0237",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN38; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0238",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN39; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0239",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN40; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0240",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN41; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0241",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN42; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0242",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN43; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0243",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN44; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0244",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN45; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0245",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN46; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0246",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN47; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0247",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN48; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0248",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN49; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0249",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN50; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0250",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN51; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0251",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN52; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0252",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN53; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0253",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN54; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0254",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN55; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0255",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN56; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0256",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN57; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0257",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN58; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0258",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN59; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0259",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN60; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0260",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN61; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0261",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN62; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0262",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN63; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0263",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN64; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0264",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN65; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0265",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN66; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0266",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN67; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0267",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN68; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0268",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN69; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0269",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN70; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0270",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN71; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0271",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN72; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0272",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN73; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0273",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN74; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0274",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN75; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0275",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN76; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0276",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN77; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0277",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN78; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0278",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN79; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0279",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN80; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0280",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN81; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0281",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN82; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0282",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN83; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0283",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN84; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0284",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN85; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0285",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN86; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0286",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN87; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0287",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN88; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0288",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN89; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0289",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN90; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0290",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN91; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0291",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN92; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0292",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN93; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0293",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN94; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0294",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN95; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0295",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN96; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0296",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN97; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0297",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN98; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0298",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN99; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0299",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN100; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0300",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN101; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0301",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN102; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0302",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN103; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0303",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN104; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0304",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN105; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0305",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN106; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0306",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN107; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0307",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN108; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0308",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN109; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0309",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN110; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0310",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN111; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0311",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN112; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0312",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN113; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0313",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN114; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0314",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN115; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0315",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN116; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0316",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN117; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0317",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN118; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0318",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN119; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0319",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN120; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0320",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN121; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0321",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN122; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0322",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN123; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0323",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN124; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0324",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN125; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0325",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN126; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0326",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN127; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0327",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN128; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0328",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN129; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0329",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN130; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0330",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN131; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0331",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN132; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0332",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN133; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0333",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN134; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0334",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN135; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0335",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN136; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0336",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN137; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0337",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN138; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0338",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN139; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0339",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN140; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0340",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN141; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0341",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN142; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0342",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN143; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0343",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN144; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0344",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN145; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0345",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN146; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0346",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN147; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0347",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN148; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0348",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN149; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0349",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN150; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0350",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN151; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0351",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN152; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0352",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN153; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0353",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN154; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0354",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN155; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0355",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN156; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0356",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN157; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0357",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN158; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0358",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN159; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0359",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN160; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0360",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN161; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0361",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN162; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0362",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN163; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0363",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN164; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0364",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN165; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0365",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN166; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0366",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN167; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0367",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN168; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0368",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN169; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0369",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN170; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0370",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN171; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0371",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN172; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0372",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN173; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0373",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN174; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0374",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN175; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0375",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN176; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0376",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN177; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0377",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN178; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0378",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN179; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0379",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN180; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0380",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN181; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0381",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN182; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0382",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN183; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0383",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN184; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0384",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN185; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0385",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN186; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0386",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN187; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0387",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN188; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0388",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN189; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0389",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN190; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0390",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN191; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0391",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN192; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0392",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN193; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0393",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN194; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0394",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN195; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0395",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN196; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0396",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN197; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0397",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN198; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0398",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN199; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0399",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN200; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0400",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN1; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0401",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN2; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0402",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN3; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0403",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN4; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0404",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN5; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0405",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN6; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0406",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN7; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0407",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN8; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0408",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN9; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0409",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN10; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0410",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN11; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0411",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN12; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0412",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN13; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0413",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN14; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0414",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN15; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0415",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN16; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0416",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN17; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0417",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN18; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0418",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN19; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0419",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN20; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0420",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN21; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0421",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN22; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0422",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN23; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0423",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN24; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0424",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN25; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0425",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN26; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0426",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN27; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0427",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN28; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0428",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN29; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0429",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN30; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0430",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN31; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0431",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN32; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0432",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN33; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0433",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN34; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0434",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN35; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0435",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN36; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0436",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN37; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0437",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN38; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0438",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN39; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0439",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN40; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0440",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN41; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0441",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN42; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0442",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN43; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0443",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN44; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0444",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN45; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0445",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN46; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0446",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN47; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0447",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN48; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0448",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN49; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0449",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN50; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0450",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN51; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0451",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN52; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0452",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN53; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0453",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN54; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0454",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN55; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0455",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN56; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0456",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN57; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0457",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN58; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0458",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN59; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0459",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN60; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0460",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN61; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0461",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN62; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0462",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN63; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0463",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN64; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0464",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN65; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0465",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN66; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0466",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN67; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0467",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN68; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0468",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN69; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0469",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN70; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0470",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN71; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0471",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN72; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0472",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN73; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0473",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN74; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0474",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN75; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0475",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN76; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0476",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN77; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0477",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN78; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0478",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN79; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0479",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN80; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0480",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN81; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0481",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN82; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0482",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN83; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0483",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN84; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0484",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN85; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0485",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN86; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0486",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN87; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0487",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN88; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0488",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN89; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0489",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN90; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0490",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN91; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0491",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN92; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0492",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN93; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0493",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN94; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0494",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN95; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0495",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN96; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0496",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN97; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0497",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN98; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0498",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN99; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0499",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN100; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0500",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN101; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0501",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN102; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0502",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN103; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0503",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN104; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0504",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN105; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0505",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN106; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0506",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN107; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0507",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN108; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0508",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN109; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0509",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN110; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0510",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN111; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0511",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN112; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0512",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN113; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0513",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN114; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0514",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN115; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0515",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN116; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0516",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN117; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0517",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN118; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0518",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN119; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0519",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN120; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0520",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN121; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0521",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN122; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0522",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN123; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0523",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN124; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0524",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN125; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0525",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN126; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0526",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN127; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0527",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN128; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0528",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN129; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0529",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN130; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0530",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN131; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0531",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN132; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0532",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN133; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0533",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN134; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0534",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN135; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0535",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN136; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0536",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN137; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0537",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN138; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0538",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN139; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0539",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN140; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0540",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN141; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0541",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN142; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0542",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN143; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0543",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN144; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0544",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN145; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0545",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN146; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0546",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN147; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0547",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN148; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0548",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN149; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0549",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN150; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0550",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN151; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0551",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN152; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0552",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN153; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0553",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN154; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0554",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN155; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0555",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN156; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0556",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN157; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0557",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN158; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0558",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN159; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0559",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN160; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0560",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN161; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0561",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN162; 压力=PN2",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0562",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN163; 压力=PN3",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0563",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN164; 压力=PN4",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0564",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN165; 压力=PN5",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0565",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN166; 压力=PN6",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0566",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN167; 压力=PN7",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0567",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN168; 压力=PN8",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0568",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN169; 压力=PN9",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0569",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN170; 压力=PN10",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0570",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN171; 压力=PN11",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0571",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN172; 压力=PN12",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 2,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0572",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN173; 压力=PN13",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 3,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0573",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN174; 压力=PN14",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 4,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0574",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN175; 压力=PN15",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 5,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0575",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN176; 压力=PN16",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 6,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0576",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN177; 压力=PN17",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 7,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0577",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN178; 压力=PN18",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 8,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0578",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN179; 压力=PN19",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 9,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0579",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN180; 压力=PN20",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 10,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0580",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN181; 压力=PN21",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 11,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0581",
-        "query": "阀门大类=示例大类1; 产品=示例产品1; 通径=DN182; 压力=PN22",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 12,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0582",
-        "query": "阀门大类=示例大类2; 产品=示例产品2; 通径=DN183; 压力=PN23",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 13,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0583",
-        "query": "阀门大类=示例大类3; 产品=示例产品3; 通径=DN184; 压力=PN24",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 14,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0584",
-        "query": "阀门大类=示例大类4; 产品=示例产品4; 通径=DN185; 压力=PN25",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 15,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0585",
-        "query": "阀门大类=示例大类0; 产品=示例产品5; 通径=DN186; 压力=PN26",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 16,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0586",
-        "query": "阀门大类=示例大类1; 产品=示例产品6; 通径=DN187; 压力=PN27",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 17,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0587",
-        "query": "阀门大类=示例大类2; 产品=示例产品7; 通径=DN188; 压力=PN28",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 18,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0588",
-        "query": "阀门大类=示例大类3; 产品=示例产品8; 通径=DN189; 压力=PN29",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 19,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0589",
-        "query": "阀门大类=示例大类4; 产品=示例产品9; 通径=DN190; 压力=PN30",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 20,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0590",
-        "query": "阀门大类=示例大类0; 产品=示例产品10; 通径=DN191; 压力=PN31",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 21,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-    {
-        "rule_id": "KB-0591",
-        "query": "阀门大类=示例大类1; 产品=示例产品11; 通径=DN192; 压力=PN32",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 22,
-        },
-        "tags": ["排产", "知识库", "示例1"],
-    },
-    {
-        "rule_id": "KB-0592",
-        "query": "阀门大类=示例大类2; 产品=示例产品12; 通径=DN193; 压力=PN33",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 23,
-        },
-        "tags": ["排产", "知识库", "示例2"],
-    },
-    {
-        "rule_id": "KB-0593",
-        "query": "阀门大类=示例大类3; 产品=示例产品13; 通径=DN194; 压力=PN34",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 24,
-        },
-        "tags": ["排产", "知识库", "示例3"],
-    },
-    {
-        "rule_id": "KB-0594",
-        "query": "阀门大类=示例大类4; 产品=示例产品14; 通径=DN195; 压力=PN35",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 25,
-        },
-        "tags": ["排产", "知识库", "示例4"],
-    },
-    {
-        "rule_id": "KB-0595",
-        "query": "阀门大类=示例大类0; 产品=示例产品15; 通径=DN196; 压力=PN36",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 26,
-        },
-        "tags": ["排产", "知识库", "示例5"],
-    },
-    {
-        "rule_id": "KB-0596",
-        "query": "阀门大类=示例大类1; 产品=示例产品16; 通径=DN197; 压力=PN37",
-        "output": {
-            "sheng_chan_xian": "L2",
-            "gu_ding_zhou_qi": 27,
-        },
-        "tags": ["排产", "知识库", "示例6"],
-    },
-    {
-        "rule_id": "KB-0597",
-        "query": "阀门大类=示例大类2; 产品=示例产品17; 通径=DN198; 压力=PN38",
-        "output": {
-            "sheng_chan_xian": "L3",
-            "gu_ding_zhou_qi": 28,
-        },
-        "tags": ["排产", "知识库", "示例7"],
-    },
-    {
-        "rule_id": "KB-0598",
-        "query": "阀门大类=示例大类3; 产品=示例产品18; 通径=DN199; 压力=PN39",
-        "output": {
-            "sheng_chan_xian": "L4",
-            "gu_ding_zhou_qi": 29,
-        },
-        "tags": ["排产", "知识库", "示例8"],
-    },
-    {
-        "rule_id": "KB-0599",
-        "query": "阀门大类=示例大类4; 产品=示例产品19; 通径=DN200; 压力=PN40",
-        "output": {
-            "sheng_chan_xian": "L5",
-            "gu_ding_zhou_qi": 30,
-        },
-        "tags": ["排产", "知识库", "示例9"],
-    },
-    {
-        "rule_id": "KB-0600",
-        "query": "阀门大类=示例大类0; 产品=示例产品0; 通径=DN1; 压力=PN1",
-        "output": {
-            "sheng_chan_xian": "L1",
-            "gu_ding_zhou_qi": 1,
-        },
-        "tags": ["排产", "知识库", "示例0"],
-    },
-]
+@app.post("/capacity/seed", summary="写入产线阈值样例（用于测试）")
+def seed_capacity(record: ThresholdRecord):
+    capacity_scheduler.seed_capacity(record)
+    return {"status": "ok"}
 
+
+@app.post("/rollback/{job_id}", summary="回滚任务（示例：仅清理任务缓存）")
+def rollback_job(job_id: str):
+    if job_id not in optimization_jobs:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    optimization_jobs.pop(job_id, None)
+    return {"status": "rolled_back", "job_id": job_id}
+
+
+# ================== 本地调试入口 ==================
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
