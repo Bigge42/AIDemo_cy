@@ -1,27 +1,28 @@
+# main.py
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from typing import Optional, List, Tuple, Set, Dict, Any
+from datetime import datetime, date, timedelta
+import os
 import json
+from urllib import request, error
+import uuid
 import logging
 from logging.handlers import TimedRotatingFileHandler
-import os
-from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib import error, request
-import uuid
 
 import pymysql
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 # ================== MySQL 配置 ==================
 DB_CONFIG = {
     "host": "127.0.0.1",
     "port": 3306,
-    "user": "rule_user",  # TODO: 改成你的 MySQL 用户名
-    "password": "Strong_Pwd_123!",  # TODO: 改成你的 MySQL 密码
-    "database": "valve_rule_db",  # TODO: 改成你的数据库名
+    "user": "rule_user",           # TODO: 改成你的 MySQL 用户名
+    "password": "Strong_Pwd_123!", # TODO: 改成你的 MySQL 密码
+    "database": "valve_rule_db",   # TODO: 改成你的数据库名
     "charset": "utf8mb4",
 }
 
@@ -40,13 +41,7 @@ def get_db_connection():
 LOG_DIR = os.getenv("VALVE_RULE_LOG_DIR", "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
-DEBUG_TRACE_DEFAULT = os.getenv("DEBUG_TRACE", "0").strip() in (
-    "1",
-    "true",
-    "True",
-    "YES",
-    "yes",
-)
+DEBUG_TRACE_DEFAULT = os.getenv("DEBUG_TRACE", "0").strip() in ("1", "true", "True", "YES", "yes")
 
 logger = logging.getLogger("valve_rule")
 logger.setLevel(logging.INFO)
@@ -65,13 +60,7 @@ if not any(isinstance(h, TimedRotatingFileHandler) for h in logger.handlers):
     logger.addHandler(file_handler)
 
 # 如你希望控制台也输出（容器/服务日志采集更方便），可打开：
-if os.getenv("VALVE_RULE_LOG_TO_CONSOLE", "1").strip() in (
-    "1",
-    "true",
-    "True",
-    "YES",
-    "yes",
-):
+if os.getenv("VALVE_RULE_LOG_TO_CONSOLE", "1").strip() in ("1", "true", "True", "YES", "yes"):
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(console_handler)
@@ -104,7 +93,6 @@ class RuleInput(BaseModel):
     - id 用于调用方标识这一行，服务只透传，不参与匹配。
     - OrderApprovedDate / ReplyDeliveryDate / RequestedDeliveryDate 为日期字段。
     """
-
     model_config = ConfigDict(
         validate_by_name=True,
         populate_by_name=True,
@@ -114,26 +102,26 @@ class RuleInput(BaseModel):
     id: Optional[str] = Field(default=None, description="调用方行ID，仅透传返回")
 
     # ------- 规则字段 -------
-    fa_men_da_lei: Optional[str] = None  # 阀门大类
-    fa_men_lei_bie: Optional[str] = None  # 阀门类别
-    chan_pin_ming_cheng: Optional[str] = None  # 产品名称
-    gong_cheng_tong_jing: Optional[str] = None  # 公称通径
-    gong_cheng_ya_li: Optional[str] = None  # 公称压力
+    fa_men_da_lei:         Optional[str] = None  # 阀门大类
+    fa_men_lei_bie:        Optional[str] = None  # 阀门类别
+    chan_pin_ming_cheng:   Optional[str] = None  # 产品名称
+    gong_cheng_tong_jing:  Optional[str] = None  # 公称通径
+    gong_cheng_ya_li:      Optional[str] = None  # 公称压力
 
-    fa_ti_cai_zhi: Optional[str] = None  # 阀体材质
-    nei_jian_cai_zhi: Optional[str] = None  # 内件材质
+    fa_ti_cai_zhi:         Optional[str] = None  # 阀体材质
+    nei_jian_cai_zhi:      Optional[str] = None  # 内件材质
     mi_feng_mian_xing_shi: Optional[str] = None  # 密封面形式
-    fa_lan_lian_jie: Optional[str] = None  # 法兰连接方式
-    shang_gai_xing_shi: Optional[str] = None  # 上盖形式
-    liu_liang_te_xing: Optional[str] = None  # 流量特性
+    fa_lan_lian_jie:       Optional[str] = None  # 法兰连接方式
+    shang_gai_xing_shi:    Optional[str] = None  # 上盖形式
+    liu_liang_te_xing:     Optional[str] = None  # 流量特性
 
-    zhi_xing_ji_gou: Optional[str] = None  # 执行机构
-    fu_jian_pei_zhi: Optional[str] = None  # 附件配置
+    zhi_xing_ji_gou:       Optional[str] = None  # 执行机构
+    fu_jian_pei_zhi:       Optional[str] = None  # 附件配置
 
-    wai_gou_fa_ti: Optional[str] = None  # 外购阀体
-    wai_gou_biao_zhi: Optional[str] = None  # 外购标志
-    te_pin: Optional[str] = None  # 特品
-    xu_hao: Optional[str] = None  # 序号
+    wai_gou_fa_ti:         Optional[str] = None  # 外购阀体
+    wai_gou_biao_zhi:      Optional[str] = None  # 外购标志
+    te_pin:                Optional[str] = None  # 特品
+    xu_hao:                Optional[str] = None  # 序号
 
     # ------- 日期输入（请求里字段名就叫这三个） -------
     order_approved_date: Optional[date] = Field(
@@ -150,16 +138,12 @@ class RuleInput(BaseModel):
 # ================== 规则分组（从粗到细） ==================
 FIELD_GROUPS: List[List[str]] = [
     ["fa_men_da_lei", "fa_men_lei_bie", "chan_pin_ming_cheng"],  # 大类/类别/产品名
-    ["gong_cheng_tong_jing", "gong_cheng_ya_li"],  # 通径/压力
-    ["fa_ti_cai_zhi", "nei_jian_cai_zhi"],  # 材质
-    ["te_pin", "wai_gou_biao_zhi", "wai_gou_fa_ti"],  # 特品/外购
-    ["zhi_xing_ji_gou", "fu_jian_pei_zhi"],  # 执行机构/附件
-    [
-        "fa_lan_lian_jie",
-        "shang_gai_xing_shi",
-        "liu_liang_te_xing",
-        "mi_feng_mian_xing_shi",
-    ],  # 结构细节
+    ["gong_cheng_tong_jing", "gong_cheng_ya_li"],                # 通径/压力
+    ["fa_ti_cai_zhi", "nei_jian_cai_zhi"],                       # 材质
+    ["te_pin", "wai_gou_biao_zhi", "wai_gou_fa_ti"],             # 特品/外购
+    ["zhi_xing_ji_gou", "fu_jian_pei_zhi"],                      # 执行机构/附件
+    ["fa_lan_lian_jie", "shang_gai_xing_shi",
+     "liu_liang_te_xing", "mi_feng_mian_xing_shi"],              # 结构细节
 ]
 
 
@@ -189,9 +173,7 @@ def error_reason_from_status(code: int) -> str:
     }.get(code, "HTTP_ERROR")
 
 
-def _outputs_to_preview(
-    outputs: Set[Tuple[Any, Any]], limit: int = 10
-) -> List[Dict[str, Any]]:
+def _outputs_to_preview(outputs: Set[Tuple[Any, Any]], limit: int = 10) -> List[Dict[str, Any]]:
     """
     outputs: {(sheng_chan_xian, gu_ding_zhou_qi), ...}
     -> [{"sheng_chan_xian": ..., "gu_ding_zhou_qi": ...}, ...]
@@ -231,6 +213,50 @@ def pick_base(
 
     return d_cust
 
+
+# ================== 排产日期二次修正规则（D_adjust） ==================
+def adjust_schedule_date(
+    *,
+    standard_delivery_date: Optional[date],
+    schedule_date: Optional[date],
+    requested_delivery_date: Optional[date],
+) -> Dict[str, Any]:
+    """
+    在 ScheduleDate（D_base）计算出来后，按业务规则做二次修正。
+
+    触发前置条件：
+    1) schedule_date > standard_delivery_date
+    2) requested_delivery_date 与 standard_delivery_date 相差较大（这里按 > 30 天判定）
+
+    设 Δ = requested_delivery_date - standard_delivery_date（天数，且 Δ > 0）：
+    - 30 < Δ <= 60   -> 标准交货日期 + 15 天
+    - 60 < Δ <= 180  -> 标准交货日期 + 30 天
+    - Δ > 180        -> 要货日期 - 60 天
+
+    返回：{"adjusted": date|None, "rule": str, "delta_days": int|None}
+    """
+    if standard_delivery_date is None or schedule_date is None:
+        return {"adjusted": schedule_date, "rule": "NONE", "delta_days": None}
+
+    # 前置条件 1：排产日期必须大于标准交货日期
+    if schedule_date <= standard_delivery_date:
+        return {"adjusted": schedule_date, "rule": "NONE", "delta_days": None}
+
+    # 前置条件 2：必须有要货日期，且与标准日期差距较大（>30天）
+    if requested_delivery_date is None:
+        return {"adjusted": schedule_date, "rule": "NONE", "delta_days": None}
+
+    delta_days = (requested_delivery_date - standard_delivery_date).days
+    if delta_days <= 30:
+        return {"adjusted": schedule_date, "rule": "NONE", "delta_days": delta_days}
+
+    if delta_days <= 60:
+        return {"adjusted": standard_delivery_date + timedelta(days=15), "rule": "STD_PLUS_15", "delta_days": delta_days}
+
+    if delta_days <= 180:
+        return {"adjusted": standard_delivery_date + timedelta(days=30), "rule": "STD_PLUS_30", "delta_days": delta_days}
+
+    return {"adjusted": requested_delivery_date - timedelta(days=60), "rule": "REQ_MINUS_60", "delta_days": delta_days}
 
 # ================== 单条推断核心（复用连接 + trace） ==================
 def infer_one_with_conn(
@@ -308,19 +334,17 @@ def infer_one_with_conn(
         if rows:
             outputs = {(r["sheng_chan_xian"], r["gu_ding_zhou_qi"]) for r in rows}
 
-        trace.append(
-            {
-                "group_index": group_idx,
-                "group_fields": list(group),
-                "added_fields": added_fields,
-                "used_fields": list(used_fields),
-                "where": " AND ".join(conditions),
-                "params": [_truncate(p) for p in params],
-                "matched_rule_count": len(rows),
-                "distinct_output_count": len(outputs),
-                "outputs_preview": _outputs_to_preview(outputs, limit=10),
-            }
-        )
+        trace.append({
+            "group_index": group_idx,
+            "group_fields": list(group),
+            "added_fields": added_fields,
+            "used_fields": list(used_fields),
+            "where": " AND ".join(conditions),
+            "params": [_truncate(p) for p in params],
+            "matched_rule_count": len(rows),
+            "distinct_output_count": len(outputs),
+            "outputs_preview": _outputs_to_preview(outputs, limit=10),
+        })
 
         # 这一轮直接变成 0 行：说明“加了这些筛选字段后，没有任何规则匹配”
         if not rows:
@@ -342,8 +366,8 @@ def infer_one_with_conn(
             # 1) StandardDeliveryDate = OrderApprovedDate + gu_ding_zhou_qi
             standard_delivery_date: Optional[date] = None
             if data.order_approved_date is not None and cycle is not None:
-                standard_delivery_date = data.order_approved_date + timedelta(
-                    days=int(cycle)
+                standard_delivery_date = (
+                    data.order_approved_date + timedelta(days=int(cycle))
                 )
 
             # 2) ScheduleDate = D_base
@@ -353,6 +377,14 @@ def infer_one_with_conn(
                 d_cust=data.requested_delivery_date,
             )
 
+            # 3) 二次修正：在排产日期计算出来后，按“排产日期>标准日期 且 要货-标准差距较大”的规则修正
+            adj = adjust_schedule_date(
+                standard_delivery_date=standard_delivery_date,
+                schedule_date=schedule_date,
+                requested_delivery_date=data.requested_delivery_date,
+            )
+            schedule_date_adjusted: Optional[date] = adj["adjusted"]
+
             return {
                 "status": "ok",
                 "id": data.id,  # 透传调用方ID
@@ -361,7 +393,14 @@ def infer_one_with_conn(
                 "matched_rule_count": len(rows),
                 "used_fields": used_fields,
                 "StandardDeliveryDate": standard_delivery_date,
-                "ScheduleDate": schedule_date,
+
+                # 最终排产日期（已应用二次修正）
+                "ScheduleDate": schedule_date_adjusted,
+
+                # 便于核对：原始D_base与修正规则（新增字段，不影响旧字段使用）
+                "ScheduleDateBase": schedule_date,
+                "ScheduleAdjustRule": adj.get("rule"),
+                "RequestedMinusStandardDays": adj.get("delta_days"),
             }
 
         # outputs>1：继续下一轮加更细字段
@@ -401,20 +440,16 @@ def do_infer(data: RuleInput, *, debug_trace: bool) -> Dict[str, Any]:
             include_trace_in_exception=debug_trace,
         )
 
-        _json_log(
-            {
-                "event": "infer_ok",
-                "request_id": request_id,
-                "id": data.id,
-                "started_at": started_at,
-                "ended_at": datetime.now(),
-                "duration_ms": int(
-                    (datetime.now() - started_at).total_seconds() * 1000
-                ),
-                "result": result,
-                "trace": trace,  # 日志里永远保留全量 trace（最核心诊断信息）
-            }
-        )
+        _json_log({
+            "event": "infer_ok",
+            "request_id": request_id,
+            "id": data.id,
+            "started_at": started_at,
+            "ended_at": datetime.now(),
+            "duration_ms": int((datetime.now() - started_at).total_seconds() * 1000),
+            "result": result,
+            "trace": trace,  # 日志里永远保留全量 trace（最核心诊断信息）
+        })
 
         resp = {"request_id": request_id, **result}
         if debug_trace:
@@ -422,44 +457,34 @@ def do_infer(data: RuleInput, *, debug_trace: bool) -> Dict[str, Any]:
         return resp
 
     except HTTPException as ex:
-        _json_log(
-            {
-                "event": "infer_fail",
-                "request_id": request_id,
-                "id": data.id,
-                "started_at": started_at,
-                "ended_at": datetime.now(),
-                "duration_ms": int(
-                    (datetime.now() - started_at).total_seconds() * 1000
-                ),
-                "error_code": ex.status_code,
-                "reason": error_reason_from_status(ex.status_code),
-                "detail": ex.detail,
-                "trace": trace,  # 日志里永远保留全量 trace
-            }
-        )
+        _json_log({
+            "event": "infer_fail",
+            "request_id": request_id,
+            "id": data.id,
+            "started_at": started_at,
+            "ended_at": datetime.now(),
+            "duration_ms": int((datetime.now() - started_at).total_seconds() * 1000),
+            "error_code": ex.status_code,
+            "reason": error_reason_from_status(ex.status_code),
+            "detail": ex.detail,
+            "trace": trace,  # 日志里永远保留全量 trace
+        })
         raise ex
 
     except Exception as e:
-        _json_log(
-            {
-                "event": "infer_fail",
-                "request_id": request_id,
-                "id": data.id,
-                "started_at": started_at,
-                "ended_at": datetime.now(),
-                "duration_ms": int(
-                    (datetime.now() - started_at).total_seconds() * 1000
-                ),
-                "error_code": 500,
-                "reason": "SERVER_ERROR",
-                "error": str(e),
-                "trace": trace,
-            }
-        )
-        raise HTTPException(
-            status_code=500, detail={"message": str(e), "reason": "SERVER_ERROR"}
-        )
+        _json_log({
+            "event": "infer_fail",
+            "request_id": request_id,
+            "id": data.id,
+            "started_at": started_at,
+            "ended_at": datetime.now(),
+            "duration_ms": int((datetime.now() - started_at).total_seconds() * 1000),
+            "error_code": 500,
+            "reason": "SERVER_ERROR",
+            "error": str(e),
+            "trace": trace,
+        })
+        raise HTTPException(status_code=500, detail={"message": str(e), "reason": "SERVER_ERROR"})
     finally:
         conn.close()
 
@@ -483,9 +508,7 @@ app.add_middleware(
 @app.post("/infer", summary="单条：推断生产线、固定周期、标准交期和排产日期")
 def infer_line_and_cycle(
     data: RuleInput,
-    debug_trace: bool = Query(
-        default=DEBUG_TRACE_DEFAULT, description="是否在响应体中返回 trace（用于调试）"
-    ),
+    debug_trace: bool = Query(default=DEBUG_TRACE_DEFAULT, description="是否在响应体中返回 trace（用于调试）"),
 ):
     return do_infer(data, debug_trace=debug_trace)
 
@@ -494,9 +517,7 @@ def infer_line_and_cycle(
 @app.post("/batch_infer", summary="批量：一次提交多条规则，逐条返回结果并生成日志")
 def batch_infer(
     items: List[RuleInput],
-    debug_trace: bool = Query(
-        default=DEBUG_TRACE_DEFAULT, description="是否在响应体中返回 trace（用于调试）"
-    ),
+    debug_trace: bool = Query(default=DEBUG_TRACE_DEFAULT, description="是否在响应体中返回 trace（用于调试）"),
 ):
     """
     增强点：
@@ -535,22 +556,18 @@ def batch_infer(
 
                 stats["ok"] += 1
 
-                _json_log(
-                    {
-                        "event": "batch_item_ok",
-                        "batch_id": batch_id,
-                        "request_id": request_id,
-                        "index": idx,
-                        "id": item.id,
-                        "started_at": item_started,
-                        "ended_at": datetime.now(),
-                        "duration_ms": int(
-                            (datetime.now() - item_started).total_seconds() * 1000
-                        ),
-                        "result": r,
-                        "trace": trace,
-                    }
-                )
+                _json_log({
+                    "event": "batch_item_ok",
+                    "batch_id": batch_id,
+                    "request_id": request_id,
+                    "index": idx,
+                    "id": item.id,
+                    "started_at": item_started,
+                    "ended_at": datetime.now(),
+                    "duration_ms": int((datetime.now() - item_started).total_seconds() * 1000),
+                    "result": r,
+                    "trace": trace,
+                })
 
                 item_resp: Dict[str, Any] = {
                     "index": idx,
@@ -567,24 +584,20 @@ def batch_infer(
                 reason = error_reason_from_status(ex.status_code)
                 stats[reason] = stats.get(reason, 0) + 1
 
-                _json_log(
-                    {
-                        "event": "batch_item_fail",
-                        "batch_id": batch_id,
-                        "request_id": request_id,
-                        "index": idx,
-                        "id": item.id,
-                        "started_at": item_started,
-                        "ended_at": datetime.now(),
-                        "duration_ms": int(
-                            (datetime.now() - item_started).total_seconds() * 1000
-                        ),
-                        "error_code": ex.status_code,
-                        "reason": reason,
-                        "detail": ex.detail,
-                        "trace": trace,
-                    }
-                )
+                _json_log({
+                    "event": "batch_item_fail",
+                    "batch_id": batch_id,
+                    "request_id": request_id,
+                    "index": idx,
+                    "id": item.id,
+                    "started_at": item_started,
+                    "ended_at": datetime.now(),
+                    "duration_ms": int((datetime.now() - item_started).total_seconds() * 1000),
+                    "error_code": ex.status_code,
+                    "reason": reason,
+                    "detail": ex.detail,
+                    "trace": trace,
+                })
 
                 item_resp = {
                     "index": idx,
@@ -602,24 +615,20 @@ def batch_infer(
             except Exception as e:
                 stats["SERVER_ERROR"] += 1
 
-                _json_log(
-                    {
-                        "event": "batch_item_fail",
-                        "batch_id": batch_id,
-                        "request_id": request_id,
-                        "index": idx,
-                        "id": item.id,
-                        "started_at": item_started,
-                        "ended_at": datetime.now(),
-                        "duration_ms": int(
-                            (datetime.now() - item_started).total_seconds() * 1000
-                        ),
-                        "error_code": 500,
-                        "reason": "SERVER_ERROR",
-                        "error": str(e),
-                        "trace": trace,
-                    }
-                )
+                _json_log({
+                    "event": "batch_item_fail",
+                    "batch_id": batch_id,
+                    "request_id": request_id,
+                    "index": idx,
+                    "id": item.id,
+                    "started_at": item_started,
+                    "ended_at": datetime.now(),
+                    "duration_ms": int((datetime.now() - item_started).total_seconds() * 1000),
+                    "error_code": 500,
+                    "reason": "SERVER_ERROR",
+                    "error": str(e),
+                    "trace": trace,
+                })
 
                 item_resp = {
                     "index": idx,
@@ -653,28 +662,24 @@ def batch_infer(
             with open(log_path, "w", encoding="utf-8") as f:
                 json.dump(log_content, f, ensure_ascii=False, indent=2, default=str)
         except Exception as e:
-            _json_log(
-                {
-                    "event": "batch_log_write_fail",
-                    "batch_id": batch_id,
-                    "error": str(e),
-                    "target": log_path,
-                }
-            )
+            _json_log({
+                "event": "batch_log_write_fail",
+                "batch_id": batch_id,
+                "error": str(e),
+                "target": log_path,
+            })
 
         # batch 级别结构化日志（app.jsonl）
-        _json_log(
-            {
-                "event": "batch_done",
-                "batch_id": batch_id,
-                "started_at": started_at,
-                "ended_at": datetime.now(),
-                "duration_ms": int((datetime.now() - started_at).total_seconds() * 1000),
-                "total": len(items),
-                "stats": stats,
-                "log_file": log_path,
-            }
-        )
+        _json_log({
+            "event": "batch_done",
+            "batch_id": batch_id,
+            "started_at": started_at,
+            "ended_at": datetime.now(),
+            "duration_ms": int((datetime.now() - started_at).total_seconds() * 1000),
+            "total": len(items),
+            "stats": stats,
+            "log_file": log_path,
+        })
 
         return {
             "batch_id": batch_id,
@@ -685,6 +690,7 @@ def batch_infer(
         }
     finally:
         conn.close()
+
 
 
 # ================== FMZD 同步（SeacherFMZD） ==================
@@ -755,10 +761,7 @@ def fetch_fmzd(start_date: date, end_date: date) -> List[Dict[str, Any]]:
             err_body = e.read().decode("utf-8", errors="replace")
         except Exception:
             err_body = ""
-        raise HTTPException(
-            status_code=502,
-            detail=f"FMZD接口HTTP错误: {getattr(e, 'code', '')} {err_body[:300]}",
-        )
+        raise HTTPException(status_code=502, detail=f"FMZD接口HTTP错误: {getattr(e, 'code', '')} {err_body[:300]}")
     except error.URLError as e:
         raise HTTPException(status_code=502, detail=f"FMZD接口网络错误: {str(e)[:300]}")
     except Exception as e:
@@ -844,9 +847,7 @@ def upsert_valve_rules(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         # 只写入“表里存在的列”
         write_cols = [c for c in FMZD_FIELD_MAP.keys() if c in available_cols]
         if not write_cols:
-            raise HTTPException(
-                status_code=500, detail="valve_rule表未包含任何可写入字段（字段名不匹配）"
-            )
+            raise HTTPException(status_code=500, detail="valve_rule表未包含任何可写入字段（字段名不匹配）")
 
         # 确保固定周期/生产线（推断依赖）优先存在
         for must in ("sheng_chan_xian", "gu_ding_zhou_qi"):
@@ -905,422 +906,9 @@ def upsert_valve_rules(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         conn.close()
 
 
-class OrderInput(BaseModel):
-    """订单输入（用于批量优化）"""
-
-    order_id: str = Field(..., description="订单号")
-    product_name: str = Field(..., description="产品名称")
-    valve_type: str = Field(..., description="阀类")
-    diameter: str = Field(..., description="通径")
-    pressure: str = Field(..., description="压力")
-    model: Optional[str] = Field(default=None, description="型号")
-    quantity: int = Field(..., description="订单数量")
-    schedule_date: date = Field(..., description="计划排产日期")
-    line_id: str = Field(..., description="产线编号")
-    cycle_base: Optional[int] = Field(default=None, description="周期基准")
-    fixed_cycle: Optional[int] = Field(default=None, description="固定周期")
-
-
-class ThresholdRecord(BaseModel):
-    """产线阈值记录"""
-
-    line_id: str
-    schedule_date: date
-    current_threshold: int
-    current_quantity: int
-
-
-class CapacityAssignment(BaseModel):
-    """阈值约束排产结果"""
-
-    order_id: str
-    line_id: str
-    original_date: date
-    assigned_date: date
-    shift_days: int
-    reason: str
-
-
-class RuleMatchTrace(BaseModel):
-    """规则命中 trace"""
-
-    order_id: str
-    match_status: str
-    matched_rule_id: Optional[str] = None
-    similarity: Optional[float] = None
-    fallback: bool = False
-    events: List[Dict[str, Any]] = Field(default_factory=list)
-
-
-class OptimizationJob(BaseModel):
-    """批量优化任务"""
-
-    job_id: str
-    created_at: datetime
-    status: str
-    total: int
-    optimized: int
-    exceptions: int
-    message: str
-
-
-class OptimizationResult(BaseModel):
-    """批量优化输出"""
-
-    job: OptimizationJob
-    orders: List[OrderInput]
-    capacities: List[CapacityAssignment]
-    traces: List[RuleMatchTrace]
-    exceptions: List[Dict[str, Any]]
-
-
-class SimpleEmbedding:
-    """简化的 Embedding 推理（占位实现）"""
-
-    def encode(self, text: str) -> List[float]:
-        tokens = [ord(ch) % 97 for ch in text if ch.strip()]
-        if not tokens:
-            return [0.0]
-        total = sum(tokens)
-        length = len(tokens)
-        return [total / length, max(tokens), min(tokens), float(length)]
-
-
-class SimpleFaissIndex:
-    """简化的 FAISS TopK 检索（占位实现）"""
-
-    def __init__(self) -> None:
-        self._vectors: Dict[str, List[float]] = {}
-
-    def add(self, rule_id: str, vector: List[float]) -> None:
-        self._vectors[rule_id] = vector
-
-    def search(self, vector: List[float], top_k: int = 5) -> List[Tuple[str, float]]:
-        results: List[Tuple[str, float]] = []
-        for rule_id, stored in self._vectors.items():
-            score = self._cosine_similarity(vector, stored)
-            results.append((rule_id, score))
-        results.sort(key=lambda item: item[1], reverse=True)
-        return results[:top_k]
-
-    @staticmethod
-    def _cosine_similarity(a: List[float], b: List[float]) -> float:
-        if not a or not b:
-            return 0.0
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = sum(x * x for x in a) ** 0.5
-        norm_b = sum(y * y for y in b) ** 0.5
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return dot / (norm_a * norm_b)
-
-
-class RuleIndexService:
-    """规则向量检索服务（Embedding + FAISS）"""
-
-    def __init__(self) -> None:
-        self.embedding = SimpleEmbedding()
-        self.index = SimpleFaissIndex()
-
-    def build_query_text(self, order: OrderInput) -> str:
-        return _select_query_text(order, mode="v1")
-
-    def add_rule_vector(self, rule_id: str, rule_text: str) -> None:
-        self.index.add(rule_id, self.embedding.encode(rule_text))
-
-    def search(self, order: OrderInput, top_k: int = 5) -> List[Tuple[str, float]]:
-        query_text = self.build_query_text(order)
-        return self.index.search(self.embedding.encode(query_text), top_k=top_k)
-
-
-class CapacityScheduler:
-    """阈值约束排产日期计算"""
-
-    def __init__(self) -> None:
-        self._capacity: Dict[Tuple[str, date], ThresholdRecord] = {}
-
-    def seed_capacity(self, record: ThresholdRecord) -> None:
-        key = _make_capacity_key(record.line_id, record.schedule_date)
-        self._capacity[key] = record
-
-    def _get_capacity(self, line_id: str, target_date: date) -> ThresholdRecord:
-        key = _make_capacity_key(line_id, target_date)
-        if key not in self._capacity:
-            self._capacity[key] = ThresholdRecord(
-                line_id=_normalize_order_line(OrderInput(
-                    order_id="__seed__",
-                    product_name="",
-                    valve_type="",
-                    diameter="",
-                    pressure="",
-                    quantity=0,
-                    schedule_date=target_date,
-                    line_id=line_id,
-                )),
-                schedule_date=target_date,
-                current_threshold=100,
-                current_quantity=0,
-            )
-        return self._capacity[key]
-
-    def assign(
-        self, orders: List[OrderInput], window_days: int = 30
-    ) -> List[CapacityAssignment]:
-        results: List[CapacityAssignment] = []
-        line_groups: Dict[str, List[OrderInput]] = {}
-        for order in orders:
-            normalized_line = _normalize_order_line(order)
-            order.line_id = normalized_line
-            order.quantity = _normalize_quantity(order.quantity)
-            line_groups.setdefault(order.line_id, []).append(order)
-
-        for line_id, line_orders in line_groups.items():
-            line_orders.sort(key=lambda o: o.schedule_date)
-            for order in line_orders:
-                assigned_date = self._find_date(order, window_days)
-                results.append(
-                    _assign_capacity_result(order, assigned_date, order.schedule_date)
-                )
-        return results
-
-    def _find_date(self, order: OrderInput, window_days: int) -> date:
-        target = order.schedule_date
-        for _ in range(window_days):
-            record = self._get_capacity(order.line_id, target)
-            if record.current_quantity + order.quantity <= record.current_threshold:
-                record.current_quantity += order.quantity
-                return target
-            target = target + timedelta(days=1)
-        return target
-
-
-class OptimizationService:
-    """智能体优化核心服务"""
-
-    def __init__(self, rule_index: RuleIndexService, scheduler: CapacityScheduler) -> None:
-        self.rule_index = rule_index
-        self.scheduler = scheduler
-
-    def match_rule(self, order: OrderInput, top_k: int = 5) -> RuleMatchTrace:
-        events: List[Dict[str, Any]] = []
-        query_v1 = _build_query_text_v1(order)
-        query_v2 = _build_query_text_v2(order)
-        query_v3 = _build_query_text_v3(order)
-        query_v4 = _build_query_text_v4(order)
-        events.append(_trace_event("query_v1", {"text": query_v1}))
-        events.append(_trace_event("query_v2", {"text": query_v2}))
-        events.append(_trace_event("query_v3", {"text": query_v3}))
-        events.append(_trace_event("query_v4", {"text": query_v4}))
-
-        candidates = self.rule_index.search(order, top_k=top_k)
-        events.append(_trace_event("faiss_topk", {"candidates": candidates}))
-
-        if not candidates:
-            events.append(_trace_event("fallback", {"reason": "召回不足"}))
-            return RuleMatchTrace(order_id=order.order_id, match_status="none", events=events)
-
-        rule_id, similarity = candidates[0]
-        status = "unique" if similarity > 0 else "multiple"
-        return RuleMatchTrace(
-            order_id=order.order_id,
-            match_status=status,
-            matched_rule_id=rule_id,
-            similarity=similarity,
-            events=events,
-        )
-
-    def optimize(
-        self, orders: List[OrderInput], operator: str = "system"
-    ) -> OptimizationResult:
-        job = OptimizationJob(
-            job_id=f"JOB-{uuid.uuid4().hex}",
-            created_at=datetime.utcnow(),
-            status="running",
-            total=len(orders),
-            optimized=0,
-            exceptions=0,
-            message="任务执行中",
-        )
-
-        traces: List[RuleMatchTrace] = []
-        exceptions: List[Dict[str, Any]] = []
-        for order in orders:
-            trace = self.match_rule(order)
-            traces.append(trace)
-            if trace.match_status in {"unique"}:
-                _apply_cycle_defaults(order)
-                job.optimized += 1
-            else:
-                job.exceptions += 1
-                exceptions.append(
-                    _build_exception(
-                        order.order_id, trace.match_status, "规则未唯一命中"
-                    )
-                )
-
-        capacities = self.scheduler.assign(orders)
-        job.status = "done"
-        job.message = "任务已完成"
-        return OptimizationResult(
-            job=job,
-            orders=orders,
-            capacities=capacities,
-            traces=traces,
-            exceptions=exceptions,
-        )
-
-
-def _build_query_text_v1(order: OrderInput) -> str:
-    # 方案一
-    """构建检索文本（版本1）。"""
-    parts = [
-        order.product_name,
-        order.valve_type,
-        order.diameter,
-        order.pressure,
-        order.model or "",
-    ]
-    return " ".join([p for p in parts if p])
-
-
-def _build_query_text_v2(order: OrderInput) -> str:
-    # 方案二
-    """构建检索文本（版本2，字段顺序调整）。"""
-    parts = [
-        order.valve_type,
-        order.product_name,
-        order.model or "",
-        order.diameter,
-        order.pressure,
-    ]
-    return " ".join([p for p in parts if p])
-
-
-def _build_query_text_v3(order: OrderInput) -> str:
-    # 方案三
-    """构建检索文本（版本3，带分隔符）。"""
-    parts = [
-        f"产品:{order.product_name}",
-        f"阀类:{order.valve_type}",
-        f"通径:{order.diameter}",
-        f"压力:{order.pressure}",
-        f"型号:{order.model or ''}",
-    ]
-    return " | ".join([p for p in parts if p])
-
-
-def _build_query_text_v4(order: OrderInput) -> str:
-    # 方案四
-    """构建检索文本（版本4，简化拼接）。"""
-    return f"{order.product_name} {order.valve_type} {order.diameter} {order.pressure} {order.model or ''}".strip()
-
-
-def _select_query_text(order: OrderInput, mode: str = "v1") -> str:
-    # 查询文本路由
-    """根据 mode 选择查询文本构建方式。"""
-    if mode == "v2":
-        return _build_query_text_v2(order)
-    if mode == "v3":
-        return _build_query_text_v3(order)
-    if mode == "v4":
-        return _build_query_text_v4(order)
-    return _build_query_text_v1(order)
-
-
-def _normalize_order_line(order: OrderInput) -> str:
-    # 产线兜底
-    """订单产线字段规范化（简单兜底）。"""
-    value = (order.line_id or "").strip()
-    if not value:
-        return "UNKNOWN_LINE"
-    return value
-
-
-def _normalize_quantity(quantity: int) -> int:
-    # 数量兜底
-    """数量兜底处理。"""
-    if quantity is None:
-        return 0
-    if quantity < 0:
-        return 0
-    return int(quantity)
-
-
-def _make_capacity_key(line_id: str, schedule_date: date) -> Tuple[str, date]:
-    # 容量键生成
-    """构造产线容量 key。"""
-    return (line_id, schedule_date)
-
-
-def _to_capacity_reason(shift_days: int) -> str:
-    # 生成原因说明
-    """生成阈值排产原因。"""
-    if shift_days <= 0:
-        return "阈值满足"
-    if shift_days == 1:
-        return "超过阈值顺延1天"
-    return f"超过阈值顺延{shift_days}天"
-
-
-def _build_exception(order_id: str, match_status: str, message: str) -> Dict[str, Any]:
-    # 统一异常格式
-    """构造异常输出。"""
-    return {
-        "order_id": order_id,
-        "reason": message,
-        "match_status": match_status,
-    }
-
-
-def _trace_event(step: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    # Trace 事件封装
-    """构建 trace event。"""
-    return {
-        "step": step,
-        "payload": payload,
-        "time": datetime.utcnow().isoformat(),
-    }
-
-
-def _apply_cycle_defaults(order: OrderInput) -> None:
-    # 周期字段兜底
-    """补齐周期字段（兜底）。"""
-    if order.fixed_cycle is None:
-        order.fixed_cycle = 0
-    if order.cycle_base is None:
-        order.cycle_base = 0
-
-
-def _assign_capacity_result(
-    order: OrderInput, assigned_date: date, original_date: date
-) -> CapacityAssignment:
-    # 结果封装
-    """构造 CapacityAssignment。"""
-    shift_days = (assigned_date - original_date).days
-    return CapacityAssignment(
-        order_id=order.order_id,
-        line_id=order.line_id,
-        original_date=original_date,
-        assigned_date=assigned_date,
-        shift_days=shift_days,
-        reason=_to_capacity_reason(shift_days),
-    )
-
-
-rule_index_service = RuleIndexService()
-capacity_scheduler = CapacityScheduler()
-optimization_service = OptimizationService(rule_index_service, capacity_scheduler)
-optimization_jobs: Dict[str, OptimizationResult] = {}
-
-
-@app.post(
-    "/sync_fmzd_today",
-    summary="同步FMZD：按天增量拉取并写入 valve_rule（start=当天, end=次日）",
-)
+@app.post("/sync_fmzd_today", summary="同步FMZD：按天增量拉取并写入 valve_rule（start=当天, end=次日）")
 def sync_fmzd_today(
-    target_date: Optional[str] = Query(
-        default=None, description="要同步哪一天(YYYY-MM-DD)。不填则取服务器当天。"
-    ),
+    target_date: Optional[str] = Query(default=None, description="要同步哪一天(YYYY-MM-DD)。不填则取服务器当天。"),
     dry_run: bool = Query(default=False, description="只拉取不落库，返回前5条映射样例。"),
 ):
     # 只同步当天：start=当天，end=次日
@@ -1360,15 +948,13 @@ def sync_fmzd_today(
 
     result = upsert_valve_rules(mapped)
 
-    _json_log(
-        {
-            "event": "sync_fmzd_today_done",
-            "start": start,
-            "end": end,
-            "fetched": len(raw),
-            "result": result,
-        }
-    )
+    _json_log({
+        "event": "sync_fmzd_today_done",
+        "start": start,
+        "end": end,
+        "fetched": len(raw),
+        "result": result,
+    })
 
     return {
         "start": start.strftime("%Y-%m-%d"),
@@ -1378,51 +964,7 @@ def sync_fmzd_today(
     }
 
 
-@app.post("/optimize", summary="智能体批量优化：规则检索 + 阈值排产")
-def optimize_orders(
-    items: List[OrderInput],
-    operator: str = Query(default="system", description="操作人"),
-):
-    if not items:
-        raise HTTPException(status_code=400, detail="订单列表不能为空")
-    result = optimization_service.optimize(items, operator=operator)
-    optimization_jobs[result.job.job_id] = result
-    _json_log(
-        {
-            "event": "optimize_done",
-            "job_id": result.job.job_id,
-            "operator": operator,
-            "total": result.job.total,
-            "optimized": result.job.optimized,
-            "exceptions": result.job.exceptions,
-        }
-    )
-    return result
-
-
-@app.get("/jobs/{job_id}", summary="查看优化任务状态")
-def get_job(job_id: str):
-    if job_id not in optimization_jobs:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    return optimization_jobs[job_id].job
-
-
-@app.post("/capacity/seed", summary="写入产线阈值样例（用于测试）")
-def seed_capacity(record: ThresholdRecord):
-    capacity_scheduler.seed_capacity(record)
-    return {"status": "ok"}
-
-
-@app.post("/rollback/{job_id}", summary="回滚任务（示例：仅清理任务缓存）")
-def rollback_job(job_id: str):
-    if job_id not in optimization_jobs:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    optimization_jobs.pop(job_id, None)
-    return {"status": "rolled_back", "job_id": job_id}
-
-
 # ================== 本地调试入口 ==================
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
