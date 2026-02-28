@@ -258,6 +258,46 @@ def adjust_schedule_date(
 
     return {"adjusted": requested_delivery_date - timedelta(days=60), "rule": "REQ_MINUS_60", "delta_days": delta_days}
 
+
+def move_forward_if_off_day(
+    *,
+    conn,
+    schedule_date: Optional[date],
+) -> Dict[str, Any]:
+    """
+    若排产日命中 calendar_off_days.date，则顺延 1 天，直到不再命中。
+
+    返回：
+    {
+      "adjusted": date|None,
+      "moved_days": int,
+      "hit_off_days": [date, ...]
+    }
+    """
+    if schedule_date is None:
+        return {"adjusted": None, "moved_days": 0, "hit_off_days": []}
+
+    current = schedule_date
+    hit_off_days: List[date] = []
+
+    with conn.cursor() as cursor:
+        while True:
+            cursor.execute(
+                "SELECT 1 FROM calendar_off_days WHERE `date` = %s LIMIT 1",
+                (current,),
+            )
+            if not cursor.fetchone():
+                break
+
+            hit_off_days.append(current)
+            current = current + timedelta(days=1)
+
+    return {
+        "adjusted": current,
+        "moved_days": len(hit_off_days),
+        "hit_off_days": hit_off_days,
+    }
+
 # ================== 单条推断核心（复用连接 + trace） ==================
 def infer_one_with_conn(
     data: RuleInput,
@@ -385,6 +425,13 @@ def infer_one_with_conn(
             )
             schedule_date_adjusted: Optional[date] = adj["adjusted"]
 
+            # 4) 若排产日落在停工日，持续顺延到最近工作日
+            off_day_adj = move_forward_if_off_day(
+                conn=conn,
+                schedule_date=schedule_date_adjusted,
+            )
+            schedule_date_final: Optional[date] = off_day_adj["adjusted"]
+
             return {
                 "status": "ok",
                 "id": data.id,  # 透传调用方ID
@@ -395,12 +442,15 @@ def infer_one_with_conn(
                 "StandardDeliveryDate": standard_delivery_date,
 
                 # 最终排产日期（已应用二次修正）
-                "ScheduleDate": schedule_date_adjusted,
+                "ScheduleDate": schedule_date_final,
 
                 # 便于核对：原始D_base与修正规则（新增字段，不影响旧字段使用）
                 "ScheduleDateBase": schedule_date,
+                "ScheduleDateAfterAdjustRule": schedule_date_adjusted,
                 "ScheduleAdjustRule": adj.get("rule"),
                 "RequestedMinusStandardDays": adj.get("delta_days"),
+                "ScheduleOffDayMovedDays": off_day_adj.get("moved_days"),
+                "ScheduleOffDayHitDates": off_day_adj.get("hit_off_days"),
             }
 
         # outputs>1：继续下一轮加更细字段
