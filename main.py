@@ -86,6 +86,53 @@ def _truncate(v: Any, max_len: int = 200) -> Any:
     return v
 
 
+
+
+_calendar_off_day_column_cache: Optional[str] = None
+
+
+def _get_calendar_off_day_column(conn) -> Optional[str]:
+    """
+    获取 calendar_off_days 用于存储“日期”的列名（带缓存）。
+    优先使用 date；若不存在则按常见命名回退。
+    """
+    global _calendar_off_day_column_cache
+    if _calendar_off_day_column_cache is not None:
+        return _calendar_off_day_column_cache
+
+    candidates: List[Tuple[str, str]] = []
+    with conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS \
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'calendar_off_days' \
+            ORDER BY ORDINAL_POSITION"
+        )
+        for r in cursor.fetchall() or []:
+            name = str(r.get("COLUMN_NAME") or "").strip()
+            dtype = str(r.get("DATA_TYPE") or "").strip().lower()
+            if name:
+                candidates.append((name, dtype))
+
+    if not candidates:
+        return None
+
+    names = {name for name, _ in candidates}
+    if "date" in names:
+        _calendar_off_day_column_cache = "date"
+        return _calendar_off_day_column_cache
+
+    for preferred in ("off_date", "calendar_date", "ri_qi", "rq", "day"):
+        if preferred in names:
+            _calendar_off_day_column_cache = preferred
+            return _calendar_off_day_column_cache
+
+    for name, dtype in candidates:
+        if dtype in ("date", "datetime", "timestamp"):
+            _calendar_off_day_column_cache = name
+            return _calendar_off_day_column_cache
+
+    return None
+
 # ================== Pydantic 模型 ==================
 class RuleInput(BaseModel):
     """
@@ -265,38 +312,58 @@ def move_forward_if_off_day(
     schedule_date: Optional[date],
 ) -> Dict[str, Any]:
     """
-    若排产日命中 calendar_off_days.date，则顺延 1 天，直到不再命中。
-
-    返回：
-    {
-      "adjusted": date|None,
-      "moved_days": int,
-      "hit_off_days": [date, ...]
-    }
+    若排产日命中 calendar_off_days 的“日期列”，则顺延 1 天直到不命中。
+    若配置表/列不存在，降级为“不顺延且不报错”，避免影响固定周期计算主流程。
     """
     if schedule_date is None:
-        return {"adjusted": None, "moved_days": 0, "hit_off_days": []}
+        return {
+            "adjusted": None,
+            "moved_days": 0,
+            "hit_off_days": [],
+            "calendar_off_day_column": None,
+            "off_day_adjust_skipped_reason": "schedule_date为空",
+        }
+
+    col_name = _get_calendar_off_day_column(conn)
+    if not col_name:
+        return {
+            "adjusted": schedule_date,
+            "moved_days": 0,
+            "hit_off_days": [],
+            "calendar_off_day_column": None,
+            "off_day_adjust_skipped_reason": "calendar_off_days无可用日期列",
+        }
 
     current = schedule_date
     hit_off_days: List[date] = []
 
-    with conn.cursor() as cursor:
-        while True:
-            cursor.execute(
-                "SELECT 1 FROM calendar_off_days WHERE `date` = %s LIMIT 1",
-                (current,),
-            )
-            if not cursor.fetchone():
-                break
+    try:
+        with conn.cursor() as cursor:
+            sql = f"SELECT 1 FROM calendar_off_days WHERE `{col_name}` = %s LIMIT 1"
+            while True:
+                cursor.execute(sql, (current,))
+                if not cursor.fetchone():
+                    break
 
-            hit_off_days.append(current)
-            current = current + timedelta(days=1)
+                hit_off_days.append(current)
+                current = current + timedelta(days=1)
+    except Exception as e:
+        return {
+            "adjusted": schedule_date,
+            "moved_days": 0,
+            "hit_off_days": [],
+            "calendar_off_day_column": col_name,
+            "off_day_adjust_skipped_reason": f"off_day检查异常: {str(e)}",
+        }
 
     return {
         "adjusted": current,
         "moved_days": len(hit_off_days),
         "hit_off_days": hit_off_days,
+        "calendar_off_day_column": col_name,
+        "off_day_adjust_skipped_reason": None,
     }
+
 
 # ================== 单条推断核心（复用连接 + trace） ==================
 def infer_one_with_conn(
@@ -451,6 +518,8 @@ def infer_one_with_conn(
                 "RequestedMinusStandardDays": adj.get("delta_days"),
                 "ScheduleOffDayMovedDays": off_day_adj.get("moved_days"),
                 "ScheduleOffDayHitDates": off_day_adj.get("hit_off_days"),
+                "ScheduleOffDayColumn": off_day_adj.get("calendar_off_day_column"),
+                "ScheduleOffDayAdjustSkippedReason": off_day_adj.get("off_day_adjust_skipped_reason"),
             }
 
         # outputs>1：继续下一轮加更细字段
