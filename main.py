@@ -1025,6 +1025,34 @@ def upsert_valve_rules(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         conn.close()
 
 
+def cleanup_valve_rule_duplicate_xuhao() -> int:
+    """
+    清理 valve_rule 表中 xu_hao 重复数据，仅保留每组最小 id 的一条记录。
+    返回删除的行数。
+    """
+    conn = get_db_connection()
+    try:
+        sql = """
+            DELETE FROM valve_rule
+            WHERE id IN (
+                SELECT id
+                FROM (
+                    SELECT id,
+                           ROW_NUMBER() OVER (PARTITION BY xu_hao ORDER BY id) AS rn
+                    FROM valve_rule
+                    WHERE xu_hao IS NOT NULL AND xu_hao <> ''
+                ) t
+                WHERE t.rn > 1
+            )
+        """
+        with conn.cursor() as cursor:
+            affected = cursor.execute(sql)
+        conn.commit()
+        return int(affected or 0)
+    finally:
+        conn.close()
+
+
 @app.post("/sync_fmzd_today", summary="同步FMZD：按天增量拉取并写入 valve_rule（start=当天, end=次日）")
 def sync_fmzd_today(
     target_date: Optional[str] = Query(default=None, description="要同步哪一天(YYYY-MM-DD)。不填则取服务器当天。"),
@@ -1066,12 +1094,15 @@ def sync_fmzd_today(
         }
 
     result = upsert_valve_rules(mapped)
+    deduplicated = cleanup_valve_rule_duplicate_xuhao()
+    result["deduplicated"] = deduplicated
 
     _json_log({
         "event": "sync_fmzd_today_done",
         "start": start,
         "end": end,
         "fetched": len(raw),
+        "deduplicated": deduplicated,
         "result": result,
     })
 
